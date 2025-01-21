@@ -136,6 +136,13 @@ export class SttTtsPlugin implements Plugin {
      * Called whenever we receive PCM from a speaker
      */
     onAudioData(data: AudioDataWithUser): void {
+        elizaLogger.debug("[SttTtsPlugin] Received audio data:", {
+            userId: data.userId,
+            samplesLength: data.samples.length,
+            maxAmplitude: Math.max(...data.samples.map(Math.abs)),
+            timestamp: new Date().toISOString()
+        });
+
         if (this.isProcessingAudio) {
             return;
         }
@@ -145,6 +152,11 @@ export class SttTtsPlugin implements Plugin {
             if (val > maxVal) maxVal = val;
         }
         if (maxVal < this.silenceThreshold) {
+            elizaLogger.debug("[SttTtsPlugin] Audio below silence threshold:", {
+                maxVal,
+                threshold: this.silenceThreshold,
+                userId: data.userId
+            });
             return;
         }
 
@@ -156,8 +168,19 @@ export class SttTtsPlugin implements Plugin {
         if (!arr) {
             arr = [];
             this.pcmBuffers.set(data.userId, arr);
+            elizaLogger.info("[SttTtsPlugin] Created new buffer for user:", {
+                userId: data.userId,
+                timestamp: new Date().toISOString()
+            });
         }
         arr.push(data.samples);
+
+        elizaLogger.debug("[SttTtsPlugin] Updated buffer stats:", {
+            userId: data.userId,
+            totalChunks: arr.length,
+            totalSamples: arr.reduce((sum, chunk) => sum + chunk.length, 0),
+            bufferDurationMs: (arr.reduce((sum, chunk) => sum + chunk.length, 0) / 48000) * 1000
+        });
 
         if (!this.isSpeaking) {
             this.userSpeakingTimer = setTimeout(() => {
@@ -261,6 +284,11 @@ export class SttTtsPlugin implements Plugin {
      * On speaker silence => flush STT => GPT => TTS => push to Janus
      */
     private async processAudio(userId: UUID): Promise<void> {
+        elizaLogger.info("[SttTtsPlugin] Starting audio processing:", {
+            userId,
+            timestamp: new Date().toISOString()
+        });
+
         if (this.isProcessingAudio) {
             return;
         }
@@ -292,17 +320,41 @@ export class SttTtsPlugin implements Plugin {
                 offset += c.length;
             }
 
+            // Log before WAV conversion
+            elizaLogger.info("[SttTtsPlugin] Converting audio to WAV:", {
+                userId,
+                totalChunks: chunks.length,
+                totalSamples: totalLen,
+                estimatedDurationMs: (totalLen / 48000) * 1000
+            });
+
             // Convert PCM to WAV for STT
             const wavBuffer = await this.convertPcmToWavInMemory(merged, 48000);
 
+            elizaLogger.info("[SttTtsPlugin] Audio conversion complete:", {
+                userId,
+                wavBufferSize: wavBuffer.byteLength,
+                timestamp: new Date().toISOString()
+            });
+
+            // Before STT
+            elizaLogger.info("[SttTtsPlugin] Sending to transcription service:", {
+                userId,
+                bufferSize: wavBuffer.byteLength,
+                timestamp: new Date().toISOString()
+            });
+
             // Whisper STT
             const sttText = await this.transcriptionService.transcribe(
-                wavBuffer
+                Buffer.from(wavBuffer)
             );
 
-            elizaLogger.log(
-                `[SttTtsPlugin] Transcription result: "${sttText}"`
-            );
+            elizaLogger.info("[SttTtsPlugin] Transcription result:", {
+                userId,
+                hasText: !!sttText,
+                textLength: sttText?.length,
+                timestamp: new Date().toISOString()
+            });
 
             if (!sttText || !sttText.trim()) {
                 elizaLogger.warn(
@@ -315,9 +367,19 @@ export class SttTtsPlugin implements Plugin {
                 `[SttTtsPlugin] STT => user=${userId}, text="${sttText}"`
             );
 
-            // Get response
-            const replyText = await this.handleUserMessage(sttText, userId);
-            if (!replyText || !replyText.length || !replyText.trim()) {
+            // Process response timing
+            const startTime = Date.now();
+            const response = await this.handleUserMessage(sttText, userId);
+            const endTime = Date.now();
+
+            elizaLogger.info("[SttTtsPlugin] Response generation complete:", {
+                userId,
+                processingTimeMs: endTime - startTime,
+                responseLength: response?.length,
+                timestamp: new Date().toISOString()
+            });
+
+            if (!response || !response.length || !response.trim()) {
                 elizaLogger.warn(
                     "[SttTtsPlugin] No replyText for user =>",
                     userId
@@ -325,14 +387,22 @@ export class SttTtsPlugin implements Plugin {
                 return;
             }
             elizaLogger.log(
-                `[SttTtsPlugin] user=${userId}, reply="${replyText}"`
+                `[SttTtsPlugin] user=${userId}, reply="${response}"`
             );
             this.isProcessingAudio = false;
             this.volumeBuffers.clear();
             // Use the standard speak method with queue
-            await this.speakText(replyText);
+            await this.speakText(response);
         } catch (error) {
-            elizaLogger.error("[SttTtsPlugin] processAudio error =>", error);
+            elizaLogger.error("[SttTtsPlugin] Error in audio processing pipeline:", {
+                userId,
+                error: {
+                    name: error.name,
+                    message: error.message,
+                    stack: error.stack
+                },
+                timestamp: new Date().toISOString()
+            });
         } finally {
             this.isProcessingAudio = false;
         }
