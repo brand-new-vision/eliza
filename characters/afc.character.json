@@ -7,40 +7,11 @@
         "INSTAGRAM_PASSWORD": "BNV$fash",
         "INSTAGRAM_APP_ID": "633611255671116",
         "INSTAGRAM_APP_SECRET": "a5e0cc2eb7dd31644eb5e87395a3ee20",
-        "POST_INTERVAL_MIN": 240,
-        "POST_INTERVAL_MAX": 480,
+        "POST_INTERVAL_MIN": 90,
+        "POST_INTERVAL_MAX": 180,
         "ENABLE_ACTION_PROCESSING": true,
         "ACTION_INTERVAL": 5,
-        "MAX_ACTIONS_PROCESSING": 3,
-        "instagram": {
-            "enabled": true,
-            "autoReply": true,
-            "handleMentions": true,
-            "handleComments": true,
-            "maxMessagesPerDay": 100,
-            "maxLikesPerDay": 50,
-            "maxCommentsPerDay": 20,
-            "targetUsers": [
-                {
-                    "username": "bnv.me",
-                    "actions": ["comment"],
-                    "commentFrequency": "daily",
-                    "maxCommentsPerDay": 1
-                },
-                {
-                    "username": "bnv.foundation",
-                    "actions": ["comment"],
-                    "commentFrequency": "daily",
-                    "maxCommentsPerDay": 1
-                }
-            ],
-            "commentSettings": {
-                "enabled": true,
-                "maxPerHour": 5,
-                "maxPerDay": 20,
-                "delayBetweenComments": 900000,
-                "avoidDuplicates": true
-            }
+        "MAX_ACTIONS_PROCESSING": 3
         },
         "voice": {
             "model": "eleven_multilingual_v2"
