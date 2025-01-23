@@ -171,37 +171,49 @@ import type { InstagramState } from "../types";
 
     private async handleComment(item: any) {
       try {
+        elizaLogger.log("Fetching comments for media:", item.media_id);
         const comments = await fetchComments(item.media_id);
+        elizaLogger.log("Found comments:", comments.length);
+
         const comment = comments.find(c => c.id === item.pk.toString());
-        if (!comment) return;
+        if (!comment) {
+            elizaLogger.error("Could not find matching comment:", item.pk);
+            return;
+        }
+        elizaLogger.log("Found matching comment:", comment);
 
         const roomId = stringToUuid(`instagram-comment-${item.media_id}-${this.runtime.agentId}`);
         const commentId = stringToUuid(`instagram-comment-${comment.id}-${this.runtime.agentId}`);
         const userId = stringToUuid(`instagram-user-${item.user_id}-${this.runtime.agentId}`);
 
+        elizaLogger.log("Generating response for comment:", comment.text);
         const cleanedResponse = await this.generateResponse(
-          comment.text,
-          comment.username,
-          "COMMENT"
+            comment.text,
+            comment.username,
+            "COMMENT"
         );
 
         if (!cleanedResponse) {
-          elizaLogger.error("Failed to generate valid comment response");
-          return;
+            elizaLogger.error("Failed to generate valid comment response");
+            return;
         }
+        elizaLogger.log("Generated response:", cleanedResponse);
 
         await this.ensureEntities(roomId, userId, comment.username);
         await this.createInteractionMemories(
-          commentId,
-          userId,
-          roomId,
-          comment,
-          cleanedResponse,
-          item.media_id
+            commentId,
+            userId,
+            roomId,
+            comment,
+            cleanedResponse,
+            item.media_id
         );
 
       } catch (error) {
-        elizaLogger.error("Error handling comment:", error);
+        elizaLogger.error("Error handling comment:", error, {
+            item,
+            stack: error.stack
+        });
       }
     }
 
