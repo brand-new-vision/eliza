@@ -67,20 +67,32 @@ import type { InstagramState } from "../types";
     constructor(runtime: IAgentRuntime, state: InstagramState) {
       this.runtime = runtime;
       this.state = state;
+      elizaLogger.log("[Instagram] Interaction service initialized");
     }
 
     async start() {
+      elizaLogger.log("[Instagram] Starting interaction service...");
+
       const handleInteractionsLoop = () => {
+        elizaLogger.log("[Instagram] Running interaction check cycle");
         this.handleInteractions();
+
         if (!this.stopProcessing) {
+          const interval = Number.parseInt(
+            this.runtime.getSetting('ACTION_INTERVAL') || '300',
+            10
+          ) * 1000;
+          elizaLogger.log(`[Instagram] Scheduling next check in ${interval}ms`);
+
           setTimeout(
             handleInteractionsLoop,
-            Number.parseInt(this.runtime.getSetting('ACTION_INTERVAL') || '300', 10) * 1000
+            interval
           );
         }
       };
 
       handleInteractionsLoop();
+      elizaLogger.log("[Instagram] Interaction service started");
     }
 
     async stop() {
@@ -133,16 +145,23 @@ import type { InstagramState } from "../types";
 
     private async handleInteractions() {
       if (this.isProcessing) {
-        elizaLogger.log("Already processing interactions, skipping");
+        elizaLogger.log("[Instagram] Already processing interactions, skipping");
         return;
       }
 
       try {
         this.isProcessing = true;
-        elizaLogger.log("Checking Instagram interactions");
+        elizaLogger.log("[Instagram] Starting interaction check cycle");
 
         const ig = getIgClient();
+        if (!ig) {
+          elizaLogger.error("[Instagram] Failed to get Instagram client");
+          return;
+        }
+
+        elizaLogger.log("[Instagram] Fetching activity feed");
         const activity = await ig.feed.news().items();
+        elizaLogger.log("[Instagram] Activity items fetched:", activity.length);
 
         for (const item of activity) {
           const activityId = `instagram-activity-${item.pk}`;
@@ -188,9 +207,9 @@ import type { InstagramState } from "../types";
 
         elizaLogger.log("Generating response for comment:", comment.text);
         const cleanedResponse = await this.generateResponse(
-            comment.text,
-            comment.username,
-            "COMMENT"
+          comment.text,
+          comment.username,
+          "COMMENT"
         );
 
         if (!cleanedResponse) {
