@@ -273,6 +273,7 @@ export class TwitterSpaceClient {
             title: chosenTopic,
             description: `Discussion about ${chosenTopic}`,
             languages: ["en"],
+            record: true
         };
     }
 
