@@ -159,50 +159,82 @@ import type { InstagramState } from "../types";
           return;
         }
 
-        elizaLogger.log("[Instagram] Fetching activity feed");
+        // Try to get activity through alternative methods
         try {
-          const activity = await ig.feed.news().items();
-          elizaLogger.log("[Instagram] Activity items fetched:", activity.length);
+          // First try direct news feed
+          elizaLogger.log("[Instagram] Attempting to fetch activity feed");
+          try {
+            const activity = await ig.feed.news().items();
+            elizaLogger.log("[Instagram] Activity items fetched:", activity.length);
+            await this.processActivityItems(activity);
+          } catch (newsError) {
+            elizaLogger.warn("[Instagram] News feed failed, trying timeline:", newsError.message);
 
-          for (const item of activity) {
-            elizaLogger.log("[Instagram] Processing activity item:", {
-              type: item.type,
-              pk: item.pk,
-              userId: item.user_id,
-              mediaId: item.media_id
-            });
+            // Fallback to timeline check
+            const timeline = await ig.feed.timeline().items();
+            elizaLogger.log("[Instagram] Timeline items fetched:", timeline.length);
 
-            const activityId = `instagram-activity-${item.pk}`;
-            if (await this.runtime.cacheManager.get(activityId)) continue;
+            // Process recent posts for comments
+            for (const post of timeline) {
+              if (post.user.pk === this.state.profile?.pk) { // Only process our posts
+                const comments = await ig.feed.mediaComments(post.id).items();
+                elizaLogger.log(`[Instagram] Found ${comments.length} comments on post ${post.id}`);
 
-            switch (item.type) {
-              case 2: // Comment on your post
-                await this.handleComment(item);
-                break;
-              case 3: // Like on your post
-                await this.handleLike(item);
-                break;
-              case 12: // Mention in comment
-                await this.handleMention(item);
-                break;
+                for (const comment of comments) {
+                  await this.handleComment({
+                    type: 2, // Comment type
+                    pk: comment.pk,
+                    user_id: comment.user_id,
+                    media_id: post.id
+                  });
+                }
+              }
             }
-
-            await this.runtime.cacheManager.set(activityId, true);
           }
-        } catch (feedError) {
-          elizaLogger.error("[Instagram] Error fetching activity feed:", {
-            error: feedError instanceof Error ? feedError.message : String(feedError),
-            stack: feedError instanceof Error ? feedError.stack : undefined
+        } catch (error) {
+          elizaLogger.error("[Instagram] Error processing interactions:", {
+            error: error instanceof Error ? error.message : String(error),
+            stack: error instanceof Error ? error.stack : undefined
           });
-          return;
         }
       } catch (error) {
-        elizaLogger.error("[Instagram] Error handling Instagram interactions:", {
+        elizaLogger.error("[Instagram] Error in interaction cycle:", {
           error: error instanceof Error ? error.message : String(error),
           stack: error instanceof Error ? error.stack : undefined
         });
       } finally {
         this.isProcessing = false;
+      }
+    }
+
+    private async processActivityItems(activity: any[]) {
+      for (const item of activity) {
+        elizaLogger.log("[Instagram] Processing activity item:", {
+          type: item.type,
+          pk: item.pk,
+          userId: item.user_id,
+          mediaId: item.media_id
+        });
+
+        const activityId = `instagram-activity-${item.pk}`;
+        if (await this.runtime.cacheManager.get(activityId)) {
+          elizaLogger.log("[Instagram] Already processed activity:", activityId);
+          continue;
+        }
+
+        switch (item.type) {
+          case 2: // Comment
+            await this.handleComment(item);
+            break;
+          case 3: // Like
+            await this.handleLike(item);
+            break;
+          case 12: // Mention
+            await this.handleMention(item);
+            break;
+        }
+
+        await this.runtime.cacheManager.set(activityId, true);
       }
     }
 
