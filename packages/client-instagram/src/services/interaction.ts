@@ -155,34 +155,52 @@ import type { InstagramState } from "../types";
 
         const ig = getIgClient();
         if (!ig) {
-          elizaLogger.error("[Instagram] Failed to get Instagram client");
+          elizaLogger.error("[Instagram] Failed to get Instagram client - client is null");
           return;
         }
 
         elizaLogger.log("[Instagram] Fetching activity feed");
-        const activity = await ig.feed.news().items();
-        elizaLogger.log("[Instagram] Activity items fetched:", activity.length);
+        try {
+          const activity = await ig.feed.news().items();
+          elizaLogger.log("[Instagram] Activity items fetched:", activity.length);
 
-        for (const item of activity) {
-          const activityId = `instagram-activity-${item.pk}`;
-          if (await this.runtime.cacheManager.get(activityId)) continue;
+          for (const item of activity) {
+            elizaLogger.log("[Instagram] Processing activity item:", {
+              type: item.type,
+              pk: item.pk,
+              userId: item.user_id,
+              mediaId: item.media_id
+            });
 
-          switch (item.type) {
-            case 2: // Comment on your post
-              await this.handleComment(item);
-              break;
-            case 3: // Like on your post
-              await this.handleLike(item);
-              break;
-            case 12: // Mention in comment
-              await this.handleMention(item);
-              break;
+            const activityId = `instagram-activity-${item.pk}`;
+            if (await this.runtime.cacheManager.get(activityId)) continue;
+
+            switch (item.type) {
+              case 2: // Comment on your post
+                await this.handleComment(item);
+                break;
+              case 3: // Like on your post
+                await this.handleLike(item);
+                break;
+              case 12: // Mention in comment
+                await this.handleMention(item);
+                break;
+            }
+
+            await this.runtime.cacheManager.set(activityId, true);
           }
-
-          await this.runtime.cacheManager.set(activityId, true);
+        } catch (feedError) {
+          elizaLogger.error("[Instagram] Error fetching activity feed:", {
+            error: feedError instanceof Error ? feedError.message : String(feedError),
+            stack: feedError instanceof Error ? feedError.stack : undefined
+          });
+          return;
         }
       } catch (error) {
-        elizaLogger.error("Error handling Instagram interactions:", error);
+        elizaLogger.error("[Instagram] Error handling Instagram interactions:", {
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined
+        });
       } finally {
         this.isProcessing = false;
       }
