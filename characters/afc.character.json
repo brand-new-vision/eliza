@@ -12,7 +12,7 @@
         "POST_INTERVAL_MAX": 30,
         "ENABLE_ACTION_PROCESSING": true,
         "ACTION_INTERVAL": 5,
-        "MAX_ACTIONS_PROCESSING": 3,
+        "MAX_ACTIONS_PROCESSING": 5,
         "instagram": {
             "enabled": true,
             "imageGeneration": {

@@ -15,13 +15,7 @@ export const getIgClient = () => {
 
 export const setIgClient = (client: IgApiClient) => {
   igClient = client;
-  // Only log details if we have a session
-  if (client.state.cookieUserId) {
-    elizaLogger.log("[Instagram] Client state updated", {
-      username: client.state.cookieUsername,
-      userId: client.state.cookieUserId
-    });
-  }
+  elizaLogger.log("[Instagram] Client state updated");
 };
 
 export const clearIgClient = () => {
@@ -29,7 +23,6 @@ export const clearIgClient = () => {
   elizaLogger.log("[Instagram] Client state cleared");
 };
 
-// Create initial state with only necessary fields
 export const createInitialState = (): InstagramState => ({
   profile: null,
   isInitialized: false,

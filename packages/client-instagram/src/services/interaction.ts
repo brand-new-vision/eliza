@@ -103,20 +103,81 @@ import { IgApiClient } from 'instagram-private-api';
           return;
         }
 
-        const activities = await fetchActivities();
+        try {
+          const activities = await fetchActivities();
+          elizaLogger.log("[Instagram] Fetched activities:", {
+            count: activities.length,
+            types: activities.map(a => a.type)
+          });
 
-        for (const activity of activities) {
-          if (activity.type === 'direct') {
-            await this.handleDirectMessage(activity);
-          } else if (activity.type === 'post') {
-            await this.handlePostActivity(activity);
+          for (const activity of activities) {
+            if (activity.type === 'direct') {
+              await this.handleDirectMessage(activity);
+            } else if (activity.type === 'post') {
+              await this.handlePostActivity(activity);
+            }
+          }
+        } catch (error) {
+          // Extract detailed error information
+          const errorDetails = {
+            message: error instanceof Error ? error.message : String(error),
+            name: error?.constructor?.name,
+            code: error.code,
+            statusCode: error.statusCode,
+            request: error.request ? {
+              method: error.request.method,
+              uri: error.request.uri?.path || error.request.url,
+              headers: error.request.headers
+            } : undefined,
+            response: error.response ? {
+              statusCode: error.response.statusCode,
+              statusMessage: error.response.statusMessage,
+              body: error.response.body
+            } : undefined
+          };
+
+          // Handle AggregateError specifically
+          if (error && error.constructor.name === 'AggregateError') {
+            const aggregateDetails = {
+              ...errorDetails,
+              errors: Array.isArray(error.errors) ? error.errors.map(e => ({
+                message: e instanceof Error ? e.message : String(e),
+                name: e?.constructor?.name,
+                code: e.code,
+                statusCode: e.statusCode,
+                apiError: e.apiError || e.error,
+                endpoint: e.request?.uri?.path || e.request?.url,
+                response: e.response ? {
+                  statusCode: e.response.statusCode,
+                  statusMessage: e.response.statusMessage,
+                  body: e.response.body
+                } : undefined
+              })) : []
+            };
+
+            elizaLogger.error("[Instagram] Multiple errors while fetching activities:", aggregateDetails);
+          } else {
+            elizaLogger.error("[Instagram] Error fetching activities:", errorDetails);
+            throw error; // Re-throw non-aggregate errors
           }
         }
 
       } catch (error) {
         elizaLogger.error("[Instagram] Error handling interactions:", {
           error: error instanceof Error ? error.message : String(error),
-          stack: error instanceof Error ? error.stack : undefined
+          errorType: error?.constructor?.name,
+          code: error.code,
+          statusCode: error.statusCode,
+          request: error.request ? {
+            method: error.request.method,
+            uri: error.request.uri?.path || error.request.url,
+            headers: error.request.headers
+          } : undefined,
+          response: error.response ? {
+            statusCode: error.response.statusCode,
+            statusMessage: error.response.statusMessage,
+            body: error.response.body
+          } : undefined
         });
       } finally {
         this.isProcessing = false;
@@ -126,28 +187,46 @@ import { IgApiClient } from 'instagram-private-api';
     private async retryOperation<T>(
       operation: () => Promise<T>,
       operationName: string,
-      maxRetries = 3
+      maxRetries = 3,
+      retryDelay = 5000
     ): Promise<T> {
-      let lastError: Error | null = null;
-      let delay = 5000;
+      let lastError: Error;
+      let currentDelay = retryDelay;
 
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
-          return await operation();
+          elizaLogger.log(`[Instagram] Attempting ${operationName} (attempt ${attempt}/${maxRetries})`);
+          const result = await operation();
+          if (attempt > 1) {
+            elizaLogger.log(`[Instagram] ${operationName} succeeded after ${attempt} attempts`);
+          }
+          return result;
         } catch (error) {
           lastError = error;
+          const isTimeout = error.code === 'ETIMEDOUT' ||
+                          (error.apiError && error.apiError.code === 'ETIMEDOUT');
+
+          // For timeouts, use exponential backoff
+          if (isTimeout) {
+            currentDelay = retryDelay * Math.pow(2, attempt - 1);
+          }
+
           elizaLogger.warn(`[Instagram] ${operationName} failed (attempt ${attempt}/${maxRetries}):`, {
-            error: error.message,
-            nextDelay: attempt < maxRetries ? delay : 'giving up'
+            errorType: error?.constructor?.name,
+            apiError: error.apiError,
+            code: error.code,
+            isTimeout,
+            nextRetry: attempt < maxRetries ? `${currentDelay}ms` : 'giving up'
           });
 
-          if (attempt === maxRetries) break;
+          if (attempt === maxRetries) {
+            throw lastError;
+          }
 
-          await new Promise(resolve => setTimeout(resolve, delay));
-          delay *= 2; // Exponential backoff
+          elizaLogger.log(`[Instagram] Waiting ${currentDelay}ms before retry...`);
+          await new Promise(resolve => setTimeout(resolve, currentDelay));
         }
       }
-
       throw lastError;
     }
 
@@ -156,27 +235,68 @@ import { IgApiClient } from 'instagram-private-api';
         elizaLogger.log("[Instagram] Processing activity:", {
           type: item.type,
           userId: item.user_id,
-          mediaId: item.media_id
+          mediaId: item.media_id,
+          itemDetails: {
+            hasUser: !!item.user,
+            username: item.user?.username,
+            hasText: !!item.text,
+            textPreview: item.text?.substring(0, 50),
+            timestamp: new Date().toISOString()
+          }
         });
 
         // Process based on activity type
         switch (item.type) {
           case 2: // Comment
+            elizaLogger.log("[Instagram] Responding to comment", {
+              mediaId: item.media_id,
+              commentId: item.id,
+              username: item.user?.username,
+              textPreview: item.text?.substring(0, 50),
+              hasLikedComment: item.has_liked_comment
+            });
             await this.handleComment(item);
             break;
           case 3: // Like
+            elizaLogger.log("[Instagram] Processing like activity", {
+              mediaId: item.media_id,
+              username: item.user?.username,
+              timestamp: item.timestamp,
+              hasPost: !!item.media
+            });
             await this.handleLike(item);
             break;
           case 12: // Mention
+            elizaLogger.log("[Instagram] Processing mention", {
+              mediaId: item.media_id,
+              username: item.user?.username,
+              textPreview: item.text?.substring(0, 50),
+              hasCaption: !!item.caption,
+              captionPreview: item.caption?.text?.substring(0, 50)
+            });
             await this.handleMention(item);
             break;
           default:
-            elizaLogger.log("[Instagram] Unhandled activity type:", item.type);
+            elizaLogger.log("[Instagram] Skipping unhandled activity type:", {
+              type: item.type,
+              supportedTypes: [2, 3, 12],
+              itemDetails: item
+            });
         }
       } catch (error) {
         elizaLogger.error("[Instagram] Error processing activity:", {
           error: error instanceof Error ? error.message : String(error),
-          activityType: item.type
+          errorType: error?.constructor?.name,
+          code: error.code,
+          apiError: error.apiError,
+          activityType: item.type,
+          mediaId: item.media_id,
+          response: error.response ? {
+            statusCode: error.response.statusCode,
+            statusMessage: error.response.statusMessage,
+            body: error.response.body
+          } : undefined,
+          stack: error instanceof Error ? error.stack : undefined
         });
       }
     }
@@ -186,35 +306,65 @@ import { IgApiClient } from 'instagram-private-api';
       username: string,
       action: string
     ) {
-      const state = await this.runtime.composeState(
-        {
-          userId: this.runtime.agentId,
-          roomId: stringToUuid(`instagram-temp-${Date.now()}-${this.runtime.agentId}`),
-          agentId: this.runtime.agentId,
-          content: {
-            text,
-            action,
+      try {
+        elizaLogger.log("[Instagram] Generating response:", {
+          action,
+          username,
+          textLength: text?.length,
+          textPreview: text?.substring(0, 50),
+          timestamp: new Date().toISOString()
+        });
+
+        const state = await this.runtime.composeState(
+          {
+            userId: this.runtime.agentId,
+            roomId: stringToUuid(`instagram-temp-${Date.now()}-${this.runtime.agentId}`),
+            agentId: this.runtime.agentId,
+            content: {
+              text,
+              action,
+            },
           },
-        },
-        {
-          instagramUsername: this.state.profile?.username,
-          commentUsername: username,
-          commentText: text,
-        }
-      );
+          {
+            instagramUsername: this.state.profile?.username,
+            commentUsername: username,
+            commentText: text,
+          }
+        );
 
-      const context = composeContext({
-        state,
-        template: instagramCommentTemplate,
-      });
+        const context = composeContext({
+          state,
+          template: instagramCommentTemplate,
+        });
 
-      const response = await generateText({
-        runtime: this.runtime,
-        context,
-        modelClass: ModelClass.SMALL,
-      });
+        const response = await generateText({
+          runtime: this.runtime,
+          context,
+          modelClass: ModelClass.SMALL,
+        });
 
-      return this.cleanResponse(response);
+        const cleanedResponse = this.cleanResponse(response);
+
+        elizaLogger.log("[Instagram] Generated response:", {
+          action,
+          username,
+          originalLength: response?.length,
+          cleanedLength: cleanedResponse?.length,
+          responsePreview: cleanedResponse?.substring(0, 50)
+        });
+
+        return cleanedResponse;
+      } catch (error) {
+        elizaLogger.error("[Instagram] Error generating response:", {
+          error: error instanceof Error ? error.message : String(error),
+          errorType: error?.constructor?.name,
+          action,
+          username,
+          textLength: text?.length,
+          stack: error instanceof Error ? error.stack : undefined
+        });
+        throw error;
+      }
     }
 
     private cleanResponse(response: string): string {
@@ -229,30 +379,65 @@ import { IgApiClient } from 'instagram-private-api';
       try {
         elizaLogger.log("[Instagram] Processing direct message:", {
           threadId: activity.thread_id,
-          userId: activity.user_id
+          userId: activity.user_id,
+          timestamp: new Date().toISOString()
         });
 
-        // Handle direct message using the latest API methods
         const ig = getIgClient();
-        if (!ig) return;
+        if (!ig) {
+          elizaLogger.error("[Instagram] Cannot handle direct message - client not initialized");
+          return;
+        }
 
-        const thread = await ig.feed.directThread({
-          thread_id: activity.thread_id,
-          oldest_cursor: null
-        }).items();
+        // Get thread with retry
+        const thread = await this.retryOperation(
+          () => ig.feed.directThread({
+            thread_id: activity.thread_id,
+            oldest_cursor: null
+          }).items(),
+          'fetch direct thread'
+        );
 
         // Process messages
         for (const message of thread) {
           if (message.item_type === 'text' && message.user_id !== Number(ig.state.cookieUserId)) {
-            await this.generateResponse(
+            const messageKey = `instagram-dm-${message.item_id}`;
+            if (await this.runtime.cacheManager.get(messageKey)) {
+              elizaLogger.log("[Instagram] Direct message already processed:", message.item_id);
+              continue;
+            }
+
+            const response = await this.generateResponse(
               message.text,
               message.user_id.toString(),
               'DIRECT'
             );
+
+            if (response && !this.runtime.getSetting("INSTAGRAM_DRY_RUN")) {
+              // Send message with retry
+              await this.retryOperation(
+                async () => {
+                  const dmThread = await ig.entity.directThread(activity.thread_id.toString());
+                  await dmThread.broadcastText(response);
+                },
+                'send direct message'
+              );
+
+              elizaLogger.log("[Instagram] Sent direct message reply:", {
+                threadId: activity.thread_id,
+                response: response
+              });
+
+              await this.runtime.cacheManager.set(messageKey, true);
+            }
           }
         }
       } catch (error) {
-        elizaLogger.error("[Instagram] Error handling direct message:", error);
+        elizaLogger.error("[Instagram] Error handling direct message:", {
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+          threadId: activity.thread_id
+        });
       }
     }
 
@@ -263,13 +448,19 @@ import { IgApiClient } from 'instagram-private-api';
           type: activity.type
         });
 
-        // Get comments using the latest pagination method
         const ig = getIgClient();
         if (!ig) return;
 
-        const commentsFeed = ig.feed.mediaComments(activity.id);
-        const comments = await commentsFeed.items();
+        // Get comments using retryOperation
+        const comments = await this.retryOperation(
+          async () => {
+            const commentsFeed = ig.feed.mediaComments(activity.id);
+            return await commentsFeed.items();
+          },
+          'fetch comments for post'
+        );
 
+        // Process comments if we got them
         for (const comment of comments) {
           if (!comment.has_liked_comment) {  // Only process new comments
             await this.handleComment({
@@ -301,7 +492,16 @@ import { IgApiClient } from 'instagram-private-api';
       } catch (error) {
         elizaLogger.error("[Instagram] Error handling post activity:", {
           error: error instanceof Error ? error.message : String(error),
-          activityId: activity.id
+          stack: error instanceof Error ? error.stack : undefined,
+          activityId: activity.id,
+          errorType: error?.constructor?.name,
+          apiError: error.apiError,
+          code: error.code,
+          response: error.response ? {
+            statusCode: error.response.statusCode,
+            statusMessage: error.response.statusMessage,
+            body: error.response.body
+          } : undefined
         });
       }
     }
@@ -309,21 +509,23 @@ import { IgApiClient } from 'instagram-private-api';
     private async handleComment(item: any) {
       try {
         const ig = getIgClient();
-        if (!ig) return;
+        if (!ig) {
+          elizaLogger.error("[Instagram] Cannot handle comment - client not initialized");
+          return;
+        }
 
         elizaLogger.log("[Instagram] Processing comment:", {
           mediaId: item.media_id,
-          commentId: item.pk
+          commentId: item.pk,
+          text: item.text?.substring(0, 50)
         });
 
-        // Check if we've already processed this comment
         const commentKey = `instagram-comment-${item.pk}`;
         if (await this.runtime.cacheManager.get(commentKey)) {
           elizaLogger.log("[Instagram] Comment already processed:", item.pk);
           return;
         }
 
-        // Generate and post response
         const response = await this.generateResponse(
           item.text,
           item.user.username,
@@ -331,65 +533,196 @@ import { IgApiClient } from 'instagram-private-api';
         );
 
         if (response && !this.runtime.getSetting("INSTAGRAM_DRY_RUN")) {
-          await ig.media.comment({
+          // Post comment with retry
+          const result = await this.retryOperation(
+            () => ig.media.comment({
+              mediaId: item.media_id,
+              text: response,
+              replyToCommentId: item.pk
+            }),
+            'post comment reply'
+          );
+
+          elizaLogger.log("[Instagram] Posted comment reply:", {
             mediaId: item.media_id,
-            text: response,
-            replyToCommentId: item.pk  // This ensures it's threaded as a reply
+            commentId: item.pk,
+            response: response,
+            result: result
           });
         }
 
-        // Mark comment as processed
         await this.runtime.cacheManager.set(commentKey, true);
 
       } catch (error) {
         elizaLogger.error("[Instagram] Error handling comment:", {
           error: error instanceof Error ? error.message : String(error),
-          commentId: item.pk
+          stack: error instanceof Error ? error.stack : undefined,
+          commentId: item.pk,
+          mediaId: item.media_id,
+          text: item.text
         });
       }
     }
 
     private async handleLike(item: any) {
       try {
+        const ig = getIgClient();
+        if (!ig) {
+          elizaLogger.error("[Instagram] Cannot handle like - client not initialized");
+          return;
+        }
+
         elizaLogger.log("[Instagram] Processing like:", {
           mediaId: item.media_id,
           userId: item.user_id
         });
-        // Add like handling logic here if needed
+
+        const likeKey = `instagram-like-${item.media_id}-${item.user_id}`;
+        if (await this.runtime.cacheManager.get(likeKey)) {
+          elizaLogger.log("[Instagram] Like already processed:", item.media_id);
+          return;
+        }
+
+        if (!this.runtime.getSetting("INSTAGRAM_DRY_RUN")) {
+          // Get user feed with retry
+          const userFeed = await this.retryOperation(
+            () => ig.feed.user(item.user_id).items(),
+            'fetch user feed'
+          );
+
+          if (userFeed.length > 0) {
+            const recentPost = userFeed[0];
+            // Like post with retry
+            await this.retryOperation(
+              () => ig.media.like({
+                mediaId: recentPost.id,
+                d: 1,
+                moduleInfo: {
+                  module_name: "photo_view_profile",
+                  username: item.user?.username || "unknown",
+                  user_id: item.user_id
+                }
+              }),
+              'like post'
+            );
+
+            elizaLogger.log("[Instagram] Reciprocated like:", {
+              originalMediaId: item.media_id,
+              reciprocatedMediaId: recentPost.id,
+              userId: item.user_id
+            });
+          }
+        }
+
+        await this.runtime.cacheManager.set(likeKey, true);
+
       } catch (error) {
-        elizaLogger.error("[Instagram] Error handling like:", error);
+        elizaLogger.error("[Instagram] Error handling like:", {
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+          mediaId: item.media_id,
+          userId: item.user_id
+        });
       }
     }
 
     private async handleMention(item: any) {
       try {
+        const ig = getIgClient();
+        if (!ig) return;
+
         elizaLogger.log("[Instagram] Processing mention:", {
           mediaId: item.media_id,
           userId: item.user_id,
           text: item.text
         });
-        // Add mention handling logic here if needed
+
+        const mentionKey = `instagram-mention-${item.media_id}`;
+        if (await this.runtime.cacheManager.get(mentionKey)) {
+          elizaLogger.log("[Instagram] Mention already processed:", item.media_id);
+          return;
+        }
+
+        const response = await this.generateResponse(
+          item.text,
+          item.user?.username || item.user_id.toString(),
+          'MENTION'
+        );
+
+        if (response && !this.runtime.getSetting("INSTAGRAM_DRY_RUN")) {
+          // Post response with retry
+          await this.retryOperation(
+            () => ig.media.comment({
+              mediaId: item.media_id,
+              text: response
+            }),
+            'post mention response'
+          );
+
+          elizaLogger.log("[Instagram] Posted response to mention:", {
+            mediaId: item.media_id,
+            response: response
+          });
+        }
+
+        await this.runtime.cacheManager.set(mentionKey, true);
+
       } catch (error) {
-        elizaLogger.error("[Instagram] Error handling mention:", error);
+        elizaLogger.error("[Instagram] Error handling mention:", {
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+          mediaId: item.media_id,
+          userId: item.user_id
+        });
       }
     }
 
     private async ensureLogin() {
+      elizaLogger.log("[Instagram] Ensuring login session...", {
+        hasUsername: !!this.runtime.getSetting("INSTAGRAM_USERNAME"),
+        hasPassword: !!this.runtime.getSetting("INSTAGRAM_PASSWORD"),
+        timestamp: new Date().toISOString()
+      });
+
       try {
-        // Use the new refreshSession function from auth.ts
         const success = await refreshSession(this.runtime, {
           INSTAGRAM_USERNAME: this.runtime.getSetting("INSTAGRAM_USERNAME"),
-          INSTAGRAM_PASSWORD: this.runtime.getSetting("INSTAGRAM_PASSWORD"),
-          INSTAGRAM_PROXY_URL: this.runtime.getSetting("INSTAGRAM_PROXY_URL")
+          INSTAGRAM_PASSWORD: this.runtime.getSetting("INSTAGRAM_PASSWORD")
         });
 
         if (!success) {
-          elizaLogger.error("[Instagram] Failed to ensure valid session");
+          elizaLogger.error("[Instagram] Failed to ensure valid session", {
+            username: this.runtime.getSetting("INSTAGRAM_USERNAME"),
+            hasPassword: !!this.runtime.getSetting("INSTAGRAM_PASSWORD"),
+            timestamp: new Date().toISOString()
+          });
           return false;
         }
+
+        const ig = getIgClient();
+        if (ig?.state?.cookieUserId) {
+          elizaLogger.log("[Instagram] Login session verified", {
+            cookieUserId: ig.state.cookieUserId,
+            timestamp: new Date().toISOString()
+          });
+        } else {
+          elizaLogger.warn("[Instagram] Session verified but no cookieUserId found");
+        }
+
         return true;
       } catch (error) {
-        elizaLogger.error("[Instagram] Error ensuring login:", error);
+        elizaLogger.error("[Instagram] Error ensuring login:", {
+          error: error instanceof Error ? error.message : String(error),
+          errorType: error?.constructor?.name,
+          apiError: error.apiError,
+          code: error.code,
+          response: error.response ? {
+            statusCode: error.response.statusCode,
+            statusMessage: error.response.statusMessage,
+            body: error.response.body
+          } : undefined,
+          stack: error instanceof Error ? error.stack : undefined
+        });
         return false;
       }
     }

@@ -173,51 +173,105 @@ export async function fetchActivities(): Promise<any[]> {
         throw new Error('Instagram client not initialized');
     }
 
-    try {
-        elizaLogger.log("[Instagram] Fetching activities using multiple feeds");
-        const activities = [];
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY = 5000;
+    let lastError: Error;
 
-        // Get direct inbox items
-        const inbox = await ig.feed.directInbox().items();
-        activities.push(...inbox.map(item => ({
-            type: 'direct',
-            ...item
-        })));
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            elizaLogger.log("[Instagram] Starting activity fetch cycle (attempt " + attempt + "/" + MAX_RETRIES + ")");
+            const activities = [];
 
-        // Get user's own media feed
-        const userFeed = await ig.feed.user(ig.state.cookieUserId).items();
+            // First get current user info
+            const currentUser = await ig.account.currentUser();
+            const userId = currentUser.pk;
+            const username = currentUser.username;
+            elizaLogger.log("[Instagram] Logged in as:", username);
 
-        // Get comments on recent posts
-        for (const post of userFeed.slice(0, 5)) { // Only check last 5 posts
-            const comments = await ig.feed.mediaComments(post.id).items();
-            activities.push(...comments.map(comment => ({
-                type: 'comment',
-                mediaId: post.id,
-                ...comment
+            // Get direct inbox items with retry
+            elizaLogger.log("[Instagram] Fetching direct messages...");
+            const inbox = await ig.feed.directInbox().items().catch(error => {
+                elizaLogger.warn("[Instagram] Failed to fetch inbox:", error.message);
+                return [];
+            });
+            elizaLogger.log(`[Instagram] Found ${inbox.length} direct messages`);
+            activities.push(...inbox.map(item => ({
+                type: 'direct',
+                ...item
             })));
-        }
 
-        // Get timeline feed for mentions
-        const timeline = await ig.feed.timeline().items();
-        const mentions = timeline.filter(item =>
-            item.caption?.text?.includes(`@${ig.state.cookieUsername}`)
-        );
-        activities.push(...mentions.map(item => ({
-            type: 'mention',
-            ...item
-        })));
+            // Get user's own media feed with retry
+            elizaLogger.log("[Instagram] Fetching user's recent posts...");
+            const userFeed = await ig.feed.user(userId).items().catch(error => {
+                elizaLogger.warn("[Instagram] Failed to fetch user feed:", error.message);
+                return [];
+            });
+            elizaLogger.log(`[Instagram] Found ${userFeed.length} recent posts`);
 
-        elizaLogger.log("[Instagram] Fetched activities:", {
-            total: activities.length,
-            types: activities.reduce((acc, curr) => {
+            // Get comments on recent posts
+            elizaLogger.log("[Instagram] Fetching comments on recent posts...");
+            let totalComments = 0;
+            for (const post of userFeed.slice(0, 5)) {
+                try {
+                    const comments = await ig.feed.mediaComments(post.id).items();
+                    totalComments += comments.length;
+                    elizaLogger.log(`[Instagram] Found ${comments.length} comments on post ${post.id}`);
+                    activities.push(...comments.map(comment => ({
+                        type: 'comment',
+                        mediaId: post.id,
+                        ...comment
+                    })));
+                } catch (error) {
+                    elizaLogger.warn(`[Instagram] Failed to fetch comments for post ${post.id}:`, error.message);
+                }
+            }
+            elizaLogger.log(`[Instagram] Total comments found: ${totalComments}`);
+
+            // Get timeline feed with retry
+            elizaLogger.log("[Instagram] Fetching timeline for mentions...");
+            const timeline = await ig.feed.timeline().items().catch(error => {
+                elizaLogger.warn("[Instagram] Failed to fetch timeline:", error.message);
+                return [];
+            });
+            const mentions = timeline.filter(item =>
+                item.caption?.text?.includes(`@${username}`)
+            );
+            elizaLogger.log(`[Instagram] Found ${mentions.length} mentions in timeline`);
+            activities.push(...mentions.map(item => ({
+                type: 'mention',
+                ...item
+            })));
+
+            // Log activity summary
+            const activitySummary = activities.reduce((acc, curr) => {
                 acc[curr.type] = (acc[curr.type] || 0) + 1;
                 return acc;
-            }, {})
-        });
+            }, {});
 
-        return activities;
-    } catch (error) {
-        elizaLogger.error('[Instagram] Error fetching activities:', error);
-        throw error;
+            elizaLogger.log("[Instagram] Activity fetch summary:", {
+                total: activities.length,
+                breakdown: Object.entries(activitySummary).map(([type, count]) =>
+                    `${type}: ${count}`
+                ).join(', ')
+            });
+
+            return activities;
+        } catch (error) {
+            lastError = error;
+            elizaLogger.warn(`[Instagram] Activities fetch attempt ${attempt}/${MAX_RETRIES} failed:`, {
+                error: error.message,
+                code: error.code,
+                attempt,
+                nextRetry: attempt < MAX_RETRIES ? `${RETRY_DELAY}ms` : 'giving up'
+            });
+
+            if (attempt < MAX_RETRIES) {
+                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+                continue;
+            }
+        }
     }
+
+    elizaLogger.error("[Instagram] All activity fetch attempts failed");
+    throw lastError;
 }
