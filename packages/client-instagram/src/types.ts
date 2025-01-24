@@ -1,9 +1,10 @@
+import type { IgApiClient } from 'instagram-private-api';
 
 export interface InstagramState {
-  accessToken: string | null;
-  longLivedToken: string | null;
   profile: InstagramProfile | null;
   isInitialized: boolean;
+  accessToken: string | null;
+  longLivedToken: string | null;
   lastCheckedMediaId: string | null;
 }
 
@@ -34,4 +35,16 @@ export interface Comment {
   timestamp: string;
   username: string;
   replies?: Comment[];
+}
+
+export interface InstagramConfig {
+  INSTAGRAM_USERNAME?: string;
+  INSTAGRAM_PASSWORD?: string;
+  INSTAGRAM_PROXY_URL?: string;
+  INSTAGRAM_DRY_RUN?: boolean;
+  INSTAGRAM_ENABLE_ACTION_PROCESSING?: boolean;
+  INSTAGRAM_APP_ID?: string;
+  INSTAGRAM_APP_SECRET?: string;
+  INSTAGRAM_BUSINESS_ACCOUNT_ID?: string;
+  INSTAGRAM_MAX_ACTIONS?: number;
 }

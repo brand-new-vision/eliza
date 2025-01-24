@@ -8,9 +8,11 @@ import {
     stringToUuid,
     type UUID
 } from "@elizaos/core";
-import { fetchComments, likeMedia, postComment } from "../lib/actions";
+import { fetchComments, likeMedia, postComment, fetchActivities } from "../lib/actions";
 import { getIgClient } from "../lib/state";
-import type { InstagramState } from "../types";
+import { refreshSession } from "../lib/auth";
+import type { InstagramState, InstagramConfig } from "../types";
+import { IgApiClient } from 'instagram-private-api';
 
   // Templates
   const instagramCommentTemplate = `
@@ -59,44 +61,124 @@ import type { InstagramState } from "../types";
   Choose [INTERACT] only if very confident about relevance and value.`;
 
   export class InstagramInteractionService {
-    private runtime: IAgentRuntime;
-    private state: InstagramState;
     private isProcessing = false;
     private stopProcessing = false;
+    private checkInterval = 60000; // 1 minute
 
-    constructor(runtime: IAgentRuntime, state: InstagramState) {
-      this.runtime = runtime;
-      this.state = state;
-      elizaLogger.log("[Instagram] Interaction service initialized");
+    constructor(
+        private runtime: IAgentRuntime,
+        private state: InstagramState
+    ) {
+        elizaLogger.log("[Instagram] Interaction service initialized");
     }
 
     async start() {
-      elizaLogger.log("[Instagram] Starting interaction service...");
-
-      const handleInteractionsLoop = () => {
-        elizaLogger.log("[Instagram] Running interaction check cycle");
-        this.handleInteractions();
-
-        if (!this.stopProcessing) {
-          const interval = Number.parseInt(
-            this.runtime.getSetting('ACTION_INTERVAL') || '300',
-            10
-          ) * 1000;
-          elizaLogger.log(`[Instagram] Scheduling next check in ${interval}ms`);
-
-          setTimeout(
-            handleInteractionsLoop,
-            interval
-          );
-        }
-      };
-
-      handleInteractionsLoop();
-      elizaLogger.log("[Instagram] Interaction service started");
+      elizaLogger.log("[Instagram] Starting interaction service");
+      this.stopProcessing = false;
+      this.processInteractions();
     }
 
     async stop() {
+      elizaLogger.log("[Instagram] Stopping interaction service");
       this.stopProcessing = true;
+    }
+
+    private async processInteractions() {
+      while (!this.stopProcessing) {
+        await this.handleInteractions();
+        await new Promise(resolve => setTimeout(resolve, this.checkInterval));
+      }
+    }
+
+    private async handleInteractions() {
+      if (this.isProcessing) return;
+
+      try {
+        this.isProcessing = true;
+        elizaLogger.log("[Instagram] Starting interaction check");
+
+        // Single session check at the start
+        if (!await this.ensureLogin()) {
+          elizaLogger.error("[Instagram] No valid session, skipping interactions");
+          return;
+        }
+
+        const activities = await fetchActivities();
+
+        for (const activity of activities) {
+          if (activity.type === 'direct') {
+            await this.handleDirectMessage(activity);
+          } else if (activity.type === 'post') {
+            await this.handlePostActivity(activity);
+          }
+        }
+
+      } catch (error) {
+        elizaLogger.error("[Instagram] Error handling interactions:", {
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined
+        });
+      } finally {
+        this.isProcessing = false;
+      }
+    }
+
+    private async retryOperation<T>(
+      operation: () => Promise<T>,
+      operationName: string,
+      maxRetries = 3
+    ): Promise<T> {
+      let lastError: Error | null = null;
+      let delay = 5000;
+
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          return await operation();
+        } catch (error) {
+          lastError = error;
+          elizaLogger.warn(`[Instagram] ${operationName} failed (attempt ${attempt}/${maxRetries}):`, {
+            error: error.message,
+            nextDelay: attempt < maxRetries ? delay : 'giving up'
+          });
+
+          if (attempt === maxRetries) break;
+
+          await new Promise(resolve => setTimeout(resolve, delay));
+          delay *= 2; // Exponential backoff
+        }
+      }
+
+      throw lastError;
+    }
+
+    private async processActivity(item: any) {
+      try {
+        elizaLogger.log("[Instagram] Processing activity:", {
+          type: item.type,
+          userId: item.user_id,
+          mediaId: item.media_id
+        });
+
+        // Process based on activity type
+        switch (item.type) {
+          case 2: // Comment
+            await this.handleComment(item);
+            break;
+          case 3: // Like
+            await this.handleLike(item);
+            break;
+          case 12: // Mention
+            await this.handleMention(item);
+            break;
+          default:
+            elizaLogger.log("[Instagram] Unhandled activity type:", item.type);
+        }
+      } catch (error) {
+        elizaLogger.error("[Instagram] Error processing activity:", {
+          error: error instanceof Error ? error.message : String(error),
+          activityType: item.type
+        });
+      }
     }
 
     private async generateResponse(
@@ -143,261 +225,172 @@ import type { InstagramState } from "../types";
         .trim();
     }
 
-    private async handleInteractions() {
-      if (this.isProcessing) {
-        elizaLogger.log("[Instagram] Already processing interactions, skipping");
-        return;
-      }
-
+    private async handleDirectMessage(activity: any) {
       try {
-        this.isProcessing = true;
-        elizaLogger.log("[Instagram] Starting interaction check cycle");
+        elizaLogger.log("[Instagram] Processing direct message:", {
+          threadId: activity.thread_id,
+          userId: activity.user_id
+        });
 
+        // Handle direct message using the latest API methods
         const ig = getIgClient();
-        if (!ig) {
-          elizaLogger.error("[Instagram] Failed to get Instagram client - client is null");
-          return;
-        }
+        if (!ig) return;
 
-        // Try to get activity through alternative methods
-        try {
-          // First try direct news feed
-          elizaLogger.log("[Instagram] Attempting to fetch activity feed");
-          try {
-            const activity = await ig.feed.news().items();
-            elizaLogger.log("[Instagram] Activity items fetched:", activity.length);
-            await this.processActivityItems(activity);
-          } catch (newsError) {
-            elizaLogger.warn("[Instagram] News feed failed, trying timeline:", newsError.message);
+        const thread = await ig.feed.directThread({
+          thread_id: activity.thread_id,
+          oldest_cursor: null
+        }).items();
 
-            // Fallback to timeline check
-            const timeline = await ig.feed.timeline().items();
-            elizaLogger.log("[Instagram] Timeline items fetched:", timeline.length);
-
-            // Process recent posts for comments
-            for (const post of timeline) {
-              if (post.user.pk === this.state.profile?.pk) { // Only process our posts
-                const comments = await ig.feed.mediaComments(post.id).items();
-                elizaLogger.log(`[Instagram] Found ${comments.length} comments on post ${post.id}`);
-
-                for (const comment of comments) {
-                  await this.handleComment({
-                    type: 2, // Comment type
-                    pk: comment.pk,
-                    user_id: comment.user_id,
-                    media_id: post.id
-                  });
-                }
-              }
-            }
+        // Process messages
+        for (const message of thread) {
+          if (message.item_type === 'text' && message.user_id !== Number(ig.state.cookieUserId)) {
+            await this.generateResponse(
+              message.text,
+              message.user_id.toString(),
+              'DIRECT'
+            );
           }
-        } catch (error) {
-          elizaLogger.error("[Instagram] Error processing interactions:", {
-            error: error instanceof Error ? error.message : String(error),
-            stack: error instanceof Error ? error.stack : undefined
-          });
         }
       } catch (error) {
-        elizaLogger.error("[Instagram] Error in interaction cycle:", {
-          error: error instanceof Error ? error.message : String(error),
-          stack: error instanceof Error ? error.stack : undefined
-        });
-      } finally {
-        this.isProcessing = false;
+        elizaLogger.error("[Instagram] Error handling direct message:", error);
       }
     }
 
-    private async processActivityItems(activity: any[]) {
-      for (const item of activity) {
-        elizaLogger.log("[Instagram] Processing activity item:", {
-          type: item.type,
-          pk: item.pk,
-          userId: item.user_id,
-          mediaId: item.media_id
+    private async handlePostActivity(activity: any) {
+      try {
+        elizaLogger.log("[Instagram] Processing post activity:", {
+          mediaId: activity.id,
+          type: activity.type
         });
 
-        const activityId = `instagram-activity-${item.pk}`;
-        if (await this.runtime.cacheManager.get(activityId)) {
-          elizaLogger.log("[Instagram] Already processed activity:", activityId);
-          continue;
+        // Get comments using the latest pagination method
+        const ig = getIgClient();
+        if (!ig) return;
+
+        const commentsFeed = ig.feed.mediaComments(activity.id);
+        const comments = await commentsFeed.items();
+
+        for (const comment of comments) {
+          if (!comment.has_liked_comment) {  // Only process new comments
+            await this.handleComment({
+              type: 2,
+              pk: comment.pk,
+              user_id: comment.user_id,
+              media_id: activity.id,
+              text: comment.text,
+              user: {
+                pk: comment.user.pk,
+                username: comment.user.username
+              }
+            });
+          }
         }
 
-        switch (item.type) {
-          case 2: // Comment
-            await this.handleComment(item);
-            break;
-          case 3: // Like
-            await this.handleLike(item);
-            break;
-          case 12: // Mention
-            await this.handleMention(item);
-            break;
+        // Check for mentions in caption
+        if (activity.caption?.text &&
+          activity.caption.text.includes(`@${this.state.profile?.username}`)) {
+          await this.handleMention({
+            type: 12,
+            pk: activity.pk,
+            user_id: activity.user.pk,
+            media_id: activity.id,
+            text: activity.caption.text
+          });
         }
 
-        await this.runtime.cacheManager.set(activityId, true);
+      } catch (error) {
+        elizaLogger.error("[Instagram] Error handling post activity:", {
+          error: error instanceof Error ? error.message : String(error),
+          activityId: activity.id
+        });
       }
     }
 
     private async handleComment(item: any) {
       try {
-        elizaLogger.log("Fetching comments for media:", item.media_id);
-        const comments = await fetchComments(item.media_id);
-        elizaLogger.log("Found comments:", comments.length);
+        const ig = getIgClient();
+        if (!ig) return;
 
-        const comment = comments.find(c => c.id === item.pk.toString());
-        if (!comment) {
-            elizaLogger.error("Could not find matching comment:", item.pk);
-            return;
+        elizaLogger.log("[Instagram] Processing comment:", {
+          mediaId: item.media_id,
+          commentId: item.pk
+        });
+
+        // Check if we've already processed this comment
+        const commentKey = `instagram-comment-${item.pk}`;
+        if (await this.runtime.cacheManager.get(commentKey)) {
+          elizaLogger.log("[Instagram] Comment already processed:", item.pk);
+          return;
         }
-        elizaLogger.log("Found matching comment:", comment);
 
-        const roomId = stringToUuid(`instagram-comment-${item.media_id}-${this.runtime.agentId}`);
-        const commentId = stringToUuid(`instagram-comment-${comment.id}-${this.runtime.agentId}`);
-        const userId = stringToUuid(`instagram-user-${item.user_id}-${this.runtime.agentId}`);
-
-        elizaLogger.log("Generating response for comment:", comment.text);
-        const cleanedResponse = await this.generateResponse(
-          comment.text,
-          comment.username,
-          "COMMENT"
+        // Generate and post response
+        const response = await this.generateResponse(
+          item.text,
+          item.user.username,
+          'COMMENT'
         );
 
-        if (!cleanedResponse) {
-            elizaLogger.error("Failed to generate valid comment response");
-            return;
+        if (response && !this.runtime.getSetting("INSTAGRAM_DRY_RUN")) {
+          await ig.media.comment({
+            mediaId: item.media_id,
+            text: response,
+            replyToCommentId: item.pk  // This ensures it's threaded as a reply
+          });
         }
-        elizaLogger.log("Generated response:", cleanedResponse);
 
-        await this.ensureEntities(roomId, userId, comment.username);
-        await this.createInteractionMemories(
-            commentId,
-            userId,
-            roomId,
-            comment,
-            cleanedResponse,
-            item.media_id
-        );
+        // Mark comment as processed
+        await this.runtime.cacheManager.set(commentKey, true);
 
       } catch (error) {
-        elizaLogger.error("Error handling comment:", error, {
-            item,
-            stack: error.stack
+        elizaLogger.error("[Instagram] Error handling comment:", {
+          error: error instanceof Error ? error.message : String(error),
+          commentId: item.pk
         });
       }
     }
 
     private async handleLike(item: any) {
       try {
-        const state = await this.runtime.composeState(
-          {
-            userId: this.runtime.agentId,
-            roomId: stringToUuid(`instagram-like-${item.media_id}-${this.runtime.agentId}`),
-            agentId: this.runtime.agentId,
-            content: { text: "", action: "DECIDE_INTERACTION" },
-          },
-          {
-            instagramUsername: this.state.profile?.username,
-            interactionType: "like",
-            username: item.user?.username,
-            content: item.text || "",
-          }
-        );
-
-        const context = composeContext({ state, template: shouldInteractTemplate });
-        const decision = await generateText({
-          runtime: this.runtime,
-          context,
-          modelClass: ModelClass.SMALL,
+        elizaLogger.log("[Instagram] Processing like:", {
+          mediaId: item.media_id,
+          userId: item.user_id
         });
-
-        if (decision.includes("[INTERACT]")) {
-          const userFeed = await getIgClient().feed.user(item.user_id).items();
-          if (userFeed.length > 0) {
-            await likeMedia(userFeed[0].id);
-            elizaLogger.log(`Liked post from user: ${item.user?.username}`);
-          }
-        }
+        // Add like handling logic here if needed
       } catch (error) {
-        elizaLogger.error("Error handling like:", error);
+        elizaLogger.error("[Instagram] Error handling like:", error);
       }
     }
 
     private async handleMention(item: any) {
       try {
-        const roomId = stringToUuid(`instagram-mention-${item.media_id}-${this.runtime.agentId}`);
-        const mentionId = stringToUuid(`instagram-mention-${item.pk}-${this.runtime.agentId}`);
-        const userId = stringToUuid(`instagram-user-${item.user.pk}-${this.runtime.agentId}`);
-
-        const cleanedResponse = await this.generateResponse(
-          item.text,
-          item.user.username,
-          "MENTION"
-        );
-
-        if (!cleanedResponse) {
-          elizaLogger.error("Failed to generate valid mention response");
-          return;
-        }
-
-        await this.ensureEntities(roomId, userId, item.user.username);
-        await this.createInteractionMemories(
-          mentionId,
-          userId,
-          roomId,
-          item,
-          cleanedResponse,
-          item.media_id
-        );
-
+        elizaLogger.log("[Instagram] Processing mention:", {
+          mediaId: item.media_id,
+          userId: item.user_id,
+          text: item.text
+        });
+        // Add mention handling logic here if needed
       } catch (error) {
-        elizaLogger.error("Error handling mention:", error);
+        elizaLogger.error("[Instagram] Error handling mention:", error);
       }
     }
 
-    private async ensureEntities(roomId: UUID, userId: UUID, username: string) {
-      await this.runtime.ensureRoomExists(roomId);
-      await this.runtime.ensureUserExists(userId, username, username, "instagram");
-      await this.runtime.ensureParticipantInRoom(this.runtime.agentId, roomId);
-    }
+    private async ensureLogin() {
+      try {
+        // Use the new refreshSession function from auth.ts
+        const success = await refreshSession(this.runtime, {
+          INSTAGRAM_USERNAME: this.runtime.getSetting("INSTAGRAM_USERNAME"),
+          INSTAGRAM_PASSWORD: this.runtime.getSetting("INSTAGRAM_PASSWORD"),
+          INSTAGRAM_PROXY_URL: this.runtime.getSetting("INSTAGRAM_PROXY_URL")
+        });
 
-    private async createInteractionMemories(
-      originalId: UUID,
-      userId: UUID,
-      roomId: UUID,
-      originalItem: any,
-      response: string,
-      mediaId: string
-    ) {
-      // Create memory of original interaction
-      await this.runtime.messageManager.createMemory({
-        id: originalId,
-        userId,
-        agentId: this.runtime.agentId,
-        content: {
-          text: originalItem.text,
-          source: "instagram",
-        },
-        roomId,
-        embedding: getEmbeddingZeroVector(),
-        createdAt: new Date(originalItem.timestamp || originalItem.created_at * 1000).getTime(),
-      });
-
-      // Post response
-      const postedComment = await postComment(mediaId, response);
-
-      // Create memory of our response
-      await this.runtime.messageManager.createMemory({
-        id: stringToUuid(`instagram-reply-${postedComment.id}-${this.runtime.agentId}`),
-        userId: this.runtime.agentId,
-        agentId: this.runtime.agentId,
-        content: {
-          text: response,
-          source: "instagram",
-          inReplyTo: originalId
-        },
-        roomId,
-        embedding: getEmbeddingZeroVector(),
-        createdAt: Date.now(),
-      });
+        if (!success) {
+          elizaLogger.error("[Instagram] Failed to ensure valid session");
+          return false;
+        }
+        return true;
+      } catch (error) {
+        elizaLogger.error("[Instagram] Error ensuring login:", error);
+        return false;
+      }
     }
   }

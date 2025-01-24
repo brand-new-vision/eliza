@@ -4,6 +4,7 @@ import { validateInstagramConfig } from "./environment";
 import { initializeClient } from "./lib/auth";
 import { InstagramInteractionService } from "./services/interaction";
 import { InstagramPostService } from "./services/post";
+import type { InstagramState } from './types';
 
 export const InstagramClientInterface: Client = {
     async start(runtime: IAgentRuntime) {
@@ -55,3 +56,4 @@ export const InstagramClientInterface: Client = {
 };
 
 export default InstagramClientInterface;
+export type { InstagramState };

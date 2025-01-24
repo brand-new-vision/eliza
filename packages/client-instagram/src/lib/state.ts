@@ -1,4 +1,5 @@
 import { IgApiClient } from 'instagram-private-api';
+import { elizaLogger } from "@elizaos/core";
 import type { InstagramState } from '../types';
 
 // Create a singleton for the Instagram API client
@@ -7,15 +8,32 @@ let igClient: IgApiClient | null = null;
 export const getIgClient = () => {
   if (!igClient) {
     igClient = new IgApiClient();
+    elizaLogger.log("[Instagram] Created new client instance");
   }
   return igClient;
 };
 
-// Create initial state
+export const setIgClient = (client: IgApiClient) => {
+  igClient = client;
+  // Only log details if we have a session
+  if (client.state.cookieUserId) {
+    elizaLogger.log("[Instagram] Client state updated", {
+      username: client.state.cookieUsername,
+      userId: client.state.cookieUserId
+    });
+  }
+};
+
+export const clearIgClient = () => {
+  igClient = null;
+  elizaLogger.log("[Instagram] Client state cleared");
+};
+
+// Create initial state with only necessary fields
 export const createInitialState = (): InstagramState => ({
-  accessToken: null,
-  longLivedToken: null,
   profile: null,
   isInitialized: false,
-  lastCheckedMediaId: null,
+  accessToken: null,
+  longLivedToken: null,
+  lastCheckedMediaId: null
 });

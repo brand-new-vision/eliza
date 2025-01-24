@@ -52,7 +52,10 @@ export class InstagramPostService {
     private lastPostTime = 0;
     private stopProcessing = false;
 
-    constructor(runtime: IAgentRuntime, state: InstagramState) {
+    constructor(
+        runtime: IAgentRuntime,
+        state: InstagramState
+    ) {
         this.runtime = runtime;
         this.state = state;
     }

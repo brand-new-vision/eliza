@@ -21,7 +21,7 @@
     "dependencies": {
         "@elizaos/core": "workspace:*",
         "zod": "3.23.8",
-        "instagram-private-api": "^1.45.3",
+        "instagram-private-api": "^1.46.1",
         "sharp": "^0.33.2",
         "glob": "11.0.0"
     },
@@ -34,6 +34,7 @@
         "build": "tsup --format esm --dts",
         "dev": "tsup --format esm --dts --watch",
         "test": "vitest run",
-        "test:watch": "vitest"
+        "test:watch": "vitest",
+        "clean": "tsc --build --clean"
     }
 }
