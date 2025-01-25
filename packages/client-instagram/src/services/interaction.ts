@@ -102,14 +102,18 @@ import { IgApiClient } from 'instagram-private-api';
           elizaLogger.log("[Instagram] Fetched activities:", {
             count: activities.length,
             types: activities.map(a => a.type),
-            timestamps: activities.map(a => new Date(a.timestamp * 1000).toISOString())
+            timestamps: activities.map(a => {
+              const timestamp = a.timestamp || a.taken_at;
+              return timestamp ? new Date(timestamp * 1000).toISOString() : 'unknown';
+            })
           });
 
           // Process activities
           for (const activity of activities) {
+            const timestamp = activity.timestamp || activity.taken_at;
             elizaLogger.debug("[Instagram] Processing activity:", {
               type: activity.type,
-              timestamp: new Date(activity.timestamp * 1000).toISOString(),
+              timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : 'unknown',
               from: activity.user?.username,
               content: activity.type === 'direct' ? activity.text : activity.caption?.text
             });
