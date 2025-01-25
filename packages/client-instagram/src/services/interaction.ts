@@ -129,14 +129,20 @@ import { IgApiClient } from 'instagram-private-api';
           const activities = await fetchActivities();
           elizaLogger.debug("[Instagram] Fetched activities:", {
             count: activities.length,
-            types: activities.map(a => a.type),
+            types: activities.map(a => ({
+                type: a.type,
+                typeOf: typeof a.type,
+                isNumber: typeof a.type === 'number',
+                isString: typeof a.type === 'string'
+            })),
             activities: activities.map(a => ({
               type: a.type,
               timestamp: a.timestamp || a.taken_at,
               userId: a.user_id,
               username: a.user?.username,
               text: a.text || a.caption?.text,
-              mediaId: a.media_id || a.id
+              mediaId: a.media_id || a.id,
+              rawActivity: a  // Log the full activity for debugging
             }))
           });
 
@@ -145,6 +151,12 @@ import { IgApiClient } from 'instagram-private-api';
             const timestamp = activity.timestamp || activity.taken_at;
             elizaLogger.debug("[Instagram] Processing activity:", {
               type: activity.type,
+              typeDetails: {
+                value: activity.type,
+                typeOf: typeof activity.type,
+                isNumber: typeof activity.type === 'number',
+                isString: typeof activity.type === 'string'
+              },
               timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : 'unknown',
               from: activity.user?.username,
               userId: activity.user_id,
@@ -153,10 +165,39 @@ import { IgApiClient } from 'instagram-private-api';
               activityDetails: activity
             });
 
-            if (activity.type === 'direct') {
-              await this.handleDirectMessage(activity);
-            } else if (activity.type === 'post') {
-              await this.handlePostActivity(activity);
+            // Handle different activity types
+            const activityType = activity.type;
+            switch (true) {
+              case activityType === 'direct':
+                await this.handleDirectMessage(activity);
+                break;
+              case activityType === 'post':
+                await this.handlePostActivity(activity);
+                break;
+              case activityType === 2:
+                elizaLogger.debug("[Instagram] Processing comment activity");
+                await this.handleComment(activity);
+                break;
+              case activityType === 3:
+                elizaLogger.debug("[Instagram] Processing like activity");
+                await this.handleLike(activity);
+                break;
+              case activityType === 12:
+                elizaLogger.debug("[Instagram] Processing mention activity");
+                await this.handleMention(activity);
+                break;
+              default:
+                elizaLogger.warn("[Instagram] Unhandled activity type:", {
+                  type: activityType,
+                  typeDetails: {
+                    value: activityType,
+                    typeOf: typeof activityType,
+                    isNumber: typeof activityType === 'number',
+                    isString: typeof activityType === 'string'
+                  },
+                  supportedTypes: ['direct', 'post', 2, 3, 12],
+                  activityDetails: activity
+                });
             }
           }
 
