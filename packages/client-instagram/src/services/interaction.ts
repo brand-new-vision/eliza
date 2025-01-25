@@ -132,11 +132,14 @@ import { IgApiClient } from 'instagram-private-api';
             }
           }
 
-          // Wait before fetching timeline to avoid rate limits
+          /*
+          // Timeline fetching temporarily disabled
           await new Promise(resolve => setTimeout(resolve, 5000));
-
-          // Then fetch timeline
           const timelinePosts = await this.fetchTimelinePosts();
+          */
+
+          /*
+          // Timeline processing temporarily disabled
           elizaLogger.debug("[Instagram] Fetched timeline:", {
             count: timelinePosts.length,
             posts: timelinePosts.map(p => ({
@@ -149,8 +152,10 @@ import { IgApiClient } from 'instagram-private-api';
               hasMedia: p.media_type === 1 || p.media_type === 2
             }))
           });
+          */
 
-          // Process timeline
+          /*
+          // Timeline post processing temporarily disabled
           for (const post of timelinePosts) {
             elizaLogger.debug("[Instagram] Processing timeline post:", {
               username: post.user.username,
@@ -175,6 +180,8 @@ import { IgApiClient } from 'instagram-private-api';
               await this.processTimelinePost(post);
             }
           }
+          */
+
         } catch (error) {
           // Extract detailed error information
           const errorDetails = {
