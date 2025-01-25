@@ -255,7 +255,10 @@ export async function fetchActivities(): Promise<any[]> {
             });
             elizaLogger.debug("[Instagram] Direct messages fetched:", {
                 count: inbox.length,
-                timestamps: inbox.map(item => new Date(item.timestamp * 1000).toISOString())
+                timestamps: inbox.map(item => {
+                    const timestamp = item.timestamp || item.taken_at;
+                    return timestamp ? new Date(Number(timestamp) * 1000).toISOString() : 'unknown';
+                })
             });
             activities.push(...inbox.map(item => ({
                 type: 'direct',
@@ -273,7 +276,10 @@ export async function fetchActivities(): Promise<any[]> {
             });
             elizaLogger.debug("[Instagram] User feed fetched:", {
                 count: userFeed.length,
-                timestamps: userFeed.map(post => new Date(post.taken_at * 1000).toISOString())
+                timestamps: userFeed.map(post => {
+                    const timestamp = post.taken_at;
+                    return timestamp ? new Date(Number(timestamp) * 1000).toISOString() : 'unknown';
+                })
             });
 
             // Get comments on recent posts
@@ -286,7 +292,10 @@ export async function fetchActivities(): Promise<any[]> {
                     elizaLogger.debug("[Instagram] Comments fetched for post:", {
                         postId: post.id,
                         commentCount: comments.length,
-                        timestamps: comments.map(c => new Date(c.created_at * 1000).toISOString())
+                        timestamps: comments.map(c => {
+                            const timestamp = c.created_at;
+                            return timestamp ? new Date(Number(timestamp) * 1000).toISOString() : 'unknown';
+                        })
                     });
                     activities.push(...comments.map(comment => ({
                         type: 'comment',
@@ -318,7 +327,10 @@ export async function fetchActivities(): Promise<any[]> {
             elizaLogger.debug("[Instagram] Mentions found in timeline:", {
                 total: mentions.length,
                 usernames: mentions.map(m => m.user.username),
-                timestamps: mentions.map(m => new Date(m.taken_at * 1000).toISOString())
+                timestamps: mentions.map(m => {
+                    const timestamp = m.taken_at;
+                    return timestamp ? new Date(Number(timestamp) * 1000).toISOString() : 'unknown';
+                })
             });
             activities.push(...mentions.map(item => ({
                 type: 'mention',
