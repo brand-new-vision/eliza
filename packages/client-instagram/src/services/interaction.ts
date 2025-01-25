@@ -2,16 +2,14 @@ import {
     composeContext,
     elizaLogger,
     generateText,
-    getEmbeddingZeroVector,
     type IAgentRuntime,
     ModelClass,
-    stringToUuid,
-    type UUID
+    stringToUuid
 } from "@elizaos/core";
-import { fetchComments, likeMedia, postComment, fetchActivities } from "../lib/actions";
 import { getIgClient } from "../lib/state";
+import type { InstagramState } from "../types";
+import { fetchActivities } from "../lib/actions";
 import { refreshSession } from "../lib/auth";
-import type { InstagramState, InstagramConfig } from "../types";
 import { IgApiClient } from 'instagram-private-api';
 
   // Templates
@@ -73,14 +71,44 @@ import { IgApiClient } from 'instagram-private-api';
     }
 
     async start() {
-      elizaLogger.log("[Instagram] Starting interaction service");
-      this.stopProcessing = false;
-      this.processInteractions();
+        elizaLogger.log("[Instagram] Starting interaction service");
+        this.stopProcessing = false;
+
+        const processLoop = async () => {
+            if (this.stopProcessing) return;
+
+            try {
+                await this.processInteractions();
+            } catch (error) {
+                elizaLogger.error("[Instagram] Error in process loop:", {
+                    error: error instanceof Error ? error.message : String(error),
+                    stack: error instanceof Error ? error.stack : undefined
+                });
+            }
+
+            // Schedule next run if not stopped
+            if (!this.stopProcessing) {
+                const interval = Number.parseInt(
+                    this.runtime.getSetting('INSTAGRAM_ACTION_INTERVAL') || '300',
+                    10
+                ) * 1000;
+
+                elizaLogger.debug("[Instagram] Scheduling next interaction check in:", {
+                    intervalMs: interval,
+                    intervalMin: interval / 60000
+                });
+
+                setTimeout(processLoop, interval);
+            }
+        };
+
+        // Start the processing loop
+        processLoop();
     }
 
     async stop() {
-      elizaLogger.log("[Instagram] Stopping interaction service");
-      this.stopProcessing = true;
+        elizaLogger.log("[Instagram] Stopping interaction service");
+        this.stopProcessing = true;
     }
 
     private async processInteractions() {
