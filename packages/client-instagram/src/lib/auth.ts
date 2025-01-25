@@ -161,21 +161,27 @@ export async function refreshSession(
 
         // Try to verify current session
         try {
-            // Generate device ID if not already set
-            if (!ig.state.deviceString) {
-                ig.state.generateDevice(config.INSTAGRAM_USERNAME);
-            }
-
             await ig.account.currentUser();
             return true;
         } catch (error) {
             elizaLogger.warn("[Instagram] Session expired, attempting refresh");
 
-            // Try to reuse saved session first
-            const cachedSession = await runtime.cacheManager.get("instagram/session");
-            if (cachedSession) {
+            async function loadSession(ig: IgApiClient): Promise<boolean> {
                 try {
-                    await ig.state.deserialize(cachedSession);
+                    const cachedSession = await runtime.cacheManager.get("instagram/session");
+                    if (cachedSession) {
+                        await ig.state.deserialize(cachedSession);
+                        return true;
+                    }
+                } catch (error) {
+                    elizaLogger.warn("[Instagram] Failed to load cached session");
+                }
+                return false;
+            }
+
+            // Try to reuse saved session first
+            if (await loadSession(ig)) {
+                try {
                     await ig.account.currentUser();
                     elizaLogger.log("[Instagram] Session refreshed from saved state");
                     return true;

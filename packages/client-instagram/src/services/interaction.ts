@@ -84,13 +84,6 @@ import { IgApiClient } from 'instagram-private-api';
     }
 
     private async processInteractions() {
-      while (!this.stopProcessing) {
-        await this.handleInteractions();
-        await new Promise(resolve => setTimeout(resolve, this.checkInterval));
-      }
-    }
-
-    private async handleInteractions() {
       if (this.isProcessing) return;
 
       try {
@@ -104,17 +97,61 @@ import { IgApiClient } from 'instagram-private-api';
         }
 
         try {
+          // Fetch activities first
           const activities = await fetchActivities();
           elizaLogger.log("[Instagram] Fetched activities:", {
             count: activities.length,
-            types: activities.map(a => a.type)
+            types: activities.map(a => a.type),
+            timestamps: activities.map(a => new Date(a.timestamp * 1000).toISOString())
           });
 
+          // Process activities
           for (const activity of activities) {
+            elizaLogger.debug("[Instagram] Processing activity:", {
+              type: activity.type,
+              timestamp: new Date(activity.timestamp * 1000).toISOString(),
+              from: activity.user?.username,
+              content: activity.type === 'direct' ? activity.text : activity.caption?.text
+            });
+
             if (activity.type === 'direct') {
               await this.handleDirectMessage(activity);
             } else if (activity.type === 'post') {
               await this.handlePostActivity(activity);
+            }
+          }
+
+          // Wait before fetching timeline to avoid rate limits
+          await new Promise(resolve => setTimeout(resolve, 5000));
+
+          // Then fetch timeline
+          const timelinePosts = await this.fetchTimelinePosts();
+          elizaLogger.log("[Instagram] Fetched timeline:", {
+            count: timelinePosts.length,
+            usernames: timelinePosts.map(p => p.user.username),
+            timestamps: timelinePosts.map(p => new Date(p.taken_at * 1000).toISOString())
+          });
+
+          // Process timeline
+          for (const post of timelinePosts) {
+            elizaLogger.debug("[Instagram] Processing timeline post:", {
+              username: post.user.username,
+              timestamp: new Date(post.taken_at * 1000).toISOString(),
+              caption: post.caption?.text,
+              hasMedia: post.media_type === 1 || post.media_type === 2, // 1 = IMAGE, 2 = VIDEO
+              mediaType: post.media_type
+            });
+
+            const shouldInteract = await this.evaluateInteraction(post);
+            elizaLogger.debug("[Instagram] Interaction decision:", {
+              postId: post.id,
+              username: post.user.username,
+              shouldInteract,
+              reason: shouldInteract ? 'Content relevant to agent interests' : 'Content not relevant enough'
+            });
+
+            if (shouldInteract) {
+              await this.processTimelinePost(post);
             }
           }
         } catch (error) {
@@ -195,6 +232,11 @@ import { IgApiClient } from 'instagram-private-api';
 
       for (let attempt = 1; attempt <= maxRetries; attempt++) {
         try {
+          // Add delay between attempts even on first try to avoid rate limits
+          if (attempt > 1 || operationName.includes('fetch')) {
+            await new Promise(resolve => setTimeout(resolve, currentDelay));
+          }
+
           elizaLogger.log(`[Instagram] Attempting ${operationName} (attempt ${attempt}/${maxRetries})`);
           const result = await operation();
           if (attempt > 1) {
@@ -203,19 +245,59 @@ import { IgApiClient } from 'instagram-private-api';
           return result;
         } catch (error) {
           lastError = error;
+
+          // Enhanced error logging for AggregateError
+          if (error && error.constructor.name === 'AggregateError') {
+            const errorDetails = {
+              name: error.constructor.name,
+              message: error.message,
+              errors: error.errors?.map(e => ({
+                name: e?.constructor?.name,
+                message: e?.message,
+                code: e?.code,
+                apiError: e?.apiError,
+                response: e?.response ? {
+                  statusCode: e?.response?.statusCode,
+                  body: e?.response?.body,
+                  headers: e?.response?.headers
+                } : undefined,
+                request: e?.request ? {
+                  method: e?.request?.method,
+                  url: e?.request?.uri?.path || e?.request?.url,
+                  headers: e?.request?.headers
+                } : undefined
+              }))
+            };
+
+            elizaLogger.error(`[Instagram] ${operationName} failed with AggregateError:`,
+              JSON.stringify(errorDetails, null, 2)
+            );
+          }
+
           const isTimeout = error.code === 'ETIMEDOUT' ||
                           (error.apiError && error.apiError.code === 'ETIMEDOUT');
+          const isRateLimit = error.response?.statusCode === 429 ||
+                            error.apiError?.error_type === 'rate_limit_error';
 
-          // For timeouts, use exponential backoff
-          if (isTimeout) {
+          // Adjust delay based on error type
+          if (isTimeout || isRateLimit) {
             currentDelay = retryDelay * Math.pow(2, attempt - 1);
+            if (isRateLimit) {
+              currentDelay += 30000; // Add 30 seconds for rate limits
+            }
           }
 
           elizaLogger.warn(`[Instagram] ${operationName} failed (attempt ${attempt}/${maxRetries}):`, {
             errorType: error?.constructor?.name,
-            apiError: error.apiError,
-            code: error.code,
+            message: error?.message,
+            apiError: error?.apiError,
+            code: error?.code,
             isTimeout,
+            isRateLimit,
+            response: error?.response ? {
+              statusCode: error.response.statusCode,
+              body: error.response.body
+            } : undefined,
             nextRetry: attempt < maxRetries ? `${currentDelay}ms` : 'giving up'
           });
 
@@ -445,7 +527,8 @@ import { IgApiClient } from 'instagram-private-api';
       try {
         elizaLogger.log("[Instagram] Processing post activity:", {
           mediaId: activity.id,
-          type: activity.type
+          type: activity.type,
+          isOwnPost: activity.user?.pk === getIgClient()?.state?.cookieUserId
         });
 
         const ig = getIgClient();
@@ -462,7 +545,9 @@ import { IgApiClient } from 'instagram-private-api';
 
         // Process comments if we got them
         for (const comment of comments) {
-          if (!comment.has_liked_comment) {  // Only process new comments
+          // Process comments on own posts even if liked, but for others' posts only process new ones
+          const isOwnPost = activity.user?.pk === ig.state.cookieUserId;
+          if (isOwnPost || !comment.has_liked_comment) {
             await this.handleComment({
               type: 2,
               pk: comment.pk,
@@ -722,6 +807,163 @@ import { IgApiClient } from 'instagram-private-api';
             body: error.response.body
           } : undefined,
           stack: error instanceof Error ? error.stack : undefined
+        });
+        return false;
+      }
+    }
+
+    private async fetchTimelinePosts() {
+      try {
+        const ig = getIgClient();
+        if (!ig) return [];
+
+        // Fetch timeline with retry
+        const posts = await this.retryOperation(
+          async () => {
+            const feed = ig.feed.timeline();
+            return await feed.items();
+          },
+          'fetch timeline posts'
+        );
+
+        elizaLogger.log("[Instagram] Fetched timeline posts:", {
+          count: posts.length
+        });
+
+        return posts;
+      } catch (error) {
+        elizaLogger.error("[Instagram] Error fetching timeline:", {
+          error: error instanceof Error ? error.message : String(error),
+          errorType: error?.constructor?.name,
+          code: error.code,
+          apiError: error.apiError
+        });
+        return [];
+      }
+    }
+
+    private async processTimelinePost(post: any) {
+      try {
+        const ig = getIgClient();
+        if (!ig) {
+          elizaLogger.error("[Instagram] Cannot process timeline post - client not initialized");
+          return;
+        }
+
+        elizaLogger.log("[Instagram] Processing timeline post:", {
+          mediaId: post.id,
+          userId: post.user.pk,
+          username: post.user.username,
+          hasCaption: !!post.caption,
+          captionPreview: post.caption?.text?.substring(0, 50)
+        });
+
+        const postKey = `instagram-timeline-${post.id}`;
+        if (await this.runtime.cacheManager.get(postKey)) {
+          elizaLogger.log("[Instagram] Timeline post already processed:", post.id);
+          return;
+        }
+
+        // Decide whether to like or comment based on content
+        if (post.caption?.text) {
+          const response = await this.generateResponse(
+            post.caption.text,
+            post.user.username,
+            'TIMELINE'
+          );
+
+          if (response && !this.runtime.getSetting("INSTAGRAM_DRY_RUN")) {
+            // Comment on post with retry
+            await this.retryOperation(
+              () => ig.media.comment({
+                mediaId: post.id,
+                text: response
+              }),
+              'comment on timeline post'
+            );
+
+            elizaLogger.log("[Instagram] Commented on timeline post:", {
+              mediaId: post.id,
+              response: response
+            });
+          }
+        } else {
+          // If no caption, just like the post
+          if (!this.runtime.getSetting("INSTAGRAM_DRY_RUN")) {
+            await this.retryOperation(
+              () => ig.media.like({
+                mediaId: post.id,
+                d: 1,
+                moduleInfo: {
+                  module_name: "feed_timeline",
+                  username: post.user.username,
+                  user_id: post.user.pk
+                }
+              }),
+              'like timeline post'
+            );
+
+            elizaLogger.log("[Instagram] Liked timeline post:", {
+              mediaId: post.id,
+              username: post.user.username
+            });
+          }
+        }
+
+        await this.runtime.cacheManager.set(postKey, true);
+      } catch (error) {
+        elizaLogger.error("[Instagram] Error processing timeline post:", {
+          error: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : undefined,
+          mediaId: post.id,
+          errorType: error?.constructor?.name,
+          apiError: error.apiError
+        });
+      }
+    }
+
+    private async evaluateInteraction(post: any): Promise<boolean> {
+      try {
+        elizaLogger.debug("[Instagram] Evaluating interaction for post:", {
+          username: post.user.username,
+          caption: post.caption?.text,
+          mediaType: post.media_type
+        });
+
+        const context = composeContext({
+          state: {
+            interactionType: 'Post Engagement',
+            username: post.user.username,
+            content: post.caption?.text || '',
+            instagramUsername: this.state.profile?.username
+          },
+          template: shouldInteractTemplate
+        });
+
+        elizaLogger.debug("[Instagram] Interaction evaluation prompt:", context);
+
+        const decision = await generateText({
+          runtime: this.runtime,
+          context,
+          modelClass: ModelClass.SMALL
+        });
+
+        elizaLogger.debug("[Instagram] Raw interaction decision:", decision);
+
+        const shouldInteract = decision.includes('[INTERACT]');
+        elizaLogger.debug("[Instagram] Final interaction decision:", {
+          shouldInteract,
+          rawDecision: decision
+        });
+
+        return shouldInteract;
+      } catch (error) {
+        elizaLogger.error("[Instagram] Error evaluating interaction:", {
+          error: error instanceof Error ? error.message : String(error),
+          post: {
+            username: post.user.username,
+            caption: post.caption?.text
+          }
         });
         return false;
       }

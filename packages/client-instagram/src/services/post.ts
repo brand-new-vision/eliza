@@ -117,6 +117,7 @@ export class InstagramPostService {
             );
 
             const topics = this.runtime.character.topics.join(", ");
+            elizaLogger.debug("Available topics:", topics);
 
             const state = await this.runtime.composeState(
                 {
@@ -133,20 +134,28 @@ export class InstagramPostService {
                 }
             );
 
+            elizaLogger.debug("Composed state:", {
+                userId: state.userId,
+                roomId: state.roomId,
+                agentId: state.agentId,
+                instagramUsername: this.state.profile?.username,
+                topics: topics
+            });
+
             const context = composeContext({
                 state,
-                // TODO: Add back in when we have a template for Instagram on character
-                //template: this.runtime.character.templates?.instagramPostTemplate || instagramPostTemplate,
                 template: instagramPostTemplate,
             });
 
-            elizaLogger.debug("generate post prompt:\n" + context);
+            elizaLogger.debug("Post generation prompt:\n" + context);
 
             const content = await generateText({
                 runtime: this.runtime,
                 context,
                 modelClass: ModelClass.SMALL,
             });
+
+            elizaLogger.debug("Raw generated content:", content);
 
             // Clean the generated content
             let cleanedContent = "";
@@ -156,8 +165,10 @@ export class InstagramPostService {
                 const parsedResponse = JSON.parse(content);
                 if (parsedResponse.text) {
                     cleanedContent = parsedResponse.text;
+                    elizaLogger.debug("Parsed JSON content:", cleanedContent);
                 } else if (typeof parsedResponse === "string") {
                     cleanedContent = parsedResponse;
+                    elizaLogger.debug("Parsed string content:", cleanedContent);
                 }
             } catch {
                 // If not JSON, clean the raw content
@@ -167,6 +178,7 @@ export class InstagramPostService {
                     .replace(/\\"/g, '"') // Unescape quotes
                     .replace(/\\n/g, "\n\n") // Unescape newlines
                     .trim();
+                elizaLogger.debug("Cleaned raw content:", cleanedContent);
             }
 
             if (!cleanedContent) {
@@ -180,9 +192,14 @@ export class InstagramPostService {
                 return;
             }
 
-            // For Instagram, we need to generate or get an image
-            const mediaUrl = await this.getOrGenerateImage(cleanedContent);
+            elizaLogger.log("Final post content:", cleanedContent);
 
+            // For Instagram, we need to generate or get an image
+            elizaLogger.log("Starting image generation for post");
+            const mediaUrl = await this.getOrGenerateImage(cleanedContent);
+            elizaLogger.log("Generated image URL:", mediaUrl);
+
+            elizaLogger.log("Creating Instagram post with content and image");
             await this.createPost({
                 media: [
                     {
@@ -194,8 +211,15 @@ export class InstagramPostService {
             });
 
             // Create memory of the post
+            const memoryId = stringToUuid(`instagram-post-${Date.now()}`);
+            elizaLogger.log("Creating memory for post:", {
+                memoryId,
+                roomId,
+                content: cleanedContent
+            });
+
             await this.runtime.messageManager.createMemory({
-                id: stringToUuid(`instagram-post-${Date.now()}`),
+                id: memoryId,
                 userId: this.runtime.agentId,
                 agentId: this.runtime.agentId,
                 content: {
@@ -206,6 +230,8 @@ export class InstagramPostService {
                 embedding: getEmbeddingZeroVector(),
                 createdAt: Date.now(),
             });
+
+            elizaLogger.log("Successfully completed post generation and publishing");
         } catch (error) {
             elizaLogger.error("Error generating Instagram post:", {
                 error: error instanceof Error ? error.message : String(error),
