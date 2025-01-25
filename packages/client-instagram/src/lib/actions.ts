@@ -298,9 +298,16 @@ export async function fetchActivities(): Promise<any[]> {
                         })
                     });
                     activities.push(...comments.map(comment => ({
-                        type: 'comment',
+                        type: 2,
                         mediaId: post.id,
-                        ...comment
+                        pk: comment.pk,
+                        user_id: comment.user_id,
+                        text: comment.text,
+                        has_liked_comment: comment.has_liked_comment,
+                        user: {
+                            pk: comment.user.pk,
+                            username: comment.user.username
+                        }
                     })));
                 } catch (error) {
                     elizaLogger.warn("[Instagram] Failed to fetch comments for post:", {
@@ -312,6 +319,7 @@ export async function fetchActivities(): Promise<any[]> {
             }
             elizaLogger.debug("[Instagram] Total comments processed:", totalComments);
 
+            /* Timeline fetch temporarily disabled
             // Get timeline feed with retry
             elizaLogger.debug("[Instagram] Fetching timeline for mentions...");
             const timeline = await ig.feed.timeline().items().catch(error => {
@@ -336,6 +344,27 @@ export async function fetchActivities(): Promise<any[]> {
                 type: 'mention',
                 ...item
             })));
+            */
+
+            // Check for mentions in comments
+            const mentionsInComments = activities
+                .filter(item => item.type === 'comment' && item.text?.includes(`@${username}`))
+                .map(item => ({
+                    type: 'mention',
+                    ...item
+                }));
+
+            if (mentionsInComments.length > 0) {
+                elizaLogger.debug("[Instagram] Found mentions in comments:", {
+                    count: mentionsInComments.length,
+                    mentions: mentionsInComments.map(m => ({
+                        username: m.user?.username,
+                        text: m.text?.substring(0, 50),
+                        mediaId: m.mediaId
+                    }))
+                });
+                activities.push(...mentionsInComments);
+            }
 
             // Log activity summary
             const activitySummary = activities.reduce((acc, curr) => {
