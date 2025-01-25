@@ -646,7 +646,8 @@ import { IgApiClient } from 'instagram-private-api';
         elizaLogger.log("[Instagram] Processing comment:", {
           mediaId: item.media_id,
           commentId: item.pk,
-          text: item.text?.substring(0, 50)
+          text: item.text?.substring(0, 50),
+          hasMention: item.text?.includes(`@${this.state.profile?.username}`)
         });
 
         const commentKey = `instagram-comment-${item.pk}`;
@@ -655,29 +656,36 @@ import { IgApiClient } from 'instagram-private-api';
           return;
         }
 
-        const response = await this.generateResponse(
-          item.text,
-          item.user.username,
-          'COMMENT'
-        );
+        // Check if comment contains a mention of the agent
+        const shouldRespond = !item.has_liked_comment ||
+                            item.text?.includes(`@${this.state.profile?.username}`);
 
-        if (response && !this.runtime.getSetting("INSTAGRAM_DRY_RUN")) {
-          // Post comment with retry
-          const result = await this.retryOperation(
-            () => ig.media.comment({
-              mediaId: item.media_id,
-              text: response,
-              replyToCommentId: item.pk
-            }),
-            'post comment reply'
+        if (shouldRespond) {
+          const response = await this.generateResponse(
+            item.text,
+            item.user.username,
+            'COMMENT'
           );
 
-          elizaLogger.log("[Instagram] Posted comment reply:", {
-            mediaId: item.media_id,
-            commentId: item.pk,
-            response: response,
-            result: result
-          });
+          if (response && !this.runtime.getSetting("INSTAGRAM_DRY_RUN")) {
+            // Post comment with retry
+            const result = await this.retryOperation(
+              () => ig.media.comment({
+                mediaId: item.media_id,
+                text: response,
+                replyToCommentId: item.pk
+              }),
+              'post comment reply'
+            );
+
+            elizaLogger.log("[Instagram] Posted comment reply:", {
+              mediaId: item.media_id,
+              commentId: item.pk,
+              response: response,
+              result: result,
+              wasMention: item.text?.includes(`@${this.state.profile?.username}`)
+            });
+          }
         }
 
         await this.runtime.cacheManager.set(commentKey, true);
