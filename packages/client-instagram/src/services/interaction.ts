@@ -88,7 +88,7 @@ import { IgApiClient } from 'instagram-private-api';
 
       try {
         this.isProcessing = true;
-        elizaLogger.debug("[Instagram] Starting interaction check cycle");
+        elizaLogger.log("[Instagram] Starting interaction check");
 
         // Single session check at the start
         if (!await this.ensureLogin()) {

@@ -55,10 +55,12 @@ export async function validateInstagramConfig(
 ): Promise<InstagramConfig> {
     try {
         const instagramConfig = {
-            INSTAGRAM_DRY_RUN: parseBooleanFromText(
-                runtime.getSetting("INSTAGRAM_DRY_RUN") ||
+            INSTAGRAM_DRY_RUN: typeof (runtime.getSetting("INSTAGRAM_DRY_RUN") || process.env.INSTAGRAM_DRY_RUN) === 'boolean'
+                ? runtime.getSetting("INSTAGRAM_DRY_RUN")
+                : parseBooleanFromText(
+                    runtime.getSetting("INSTAGRAM_DRY_RUN")?.toString() ||
                     process.env.INSTAGRAM_DRY_RUN
-            ) ?? false,
+                ) ?? false,
 
             INSTAGRAM_USERNAME: runtime.getSetting("INSTAGRAM_USERNAME") ||
                 process.env.INSTAGRAM_USERNAME,
@@ -89,10 +91,12 @@ export async function validateInstagramConfig(
                 10
             ),
 
-            INSTAGRAM_ENABLE_ACTION_PROCESSING: parseBooleanFromText(
-                runtime.getSetting("INSTAGRAM_ENABLE_ACTION_PROCESSING") ||
+            INSTAGRAM_ENABLE_ACTION_PROCESSING: typeof (runtime.getSetting("INSTAGRAM_ENABLE_ACTION_PROCESSING") || process.env.INSTAGRAM_ENABLE_ACTION_PROCESSING) === 'boolean'
+                ? runtime.getSetting("INSTAGRAM_ENABLE_ACTION_PROCESSING")
+                : parseBooleanFromText(
+                    runtime.getSetting("INSTAGRAM_ENABLE_ACTION_PROCESSING")?.toString() ||
                     process.env.INSTAGRAM_ENABLE_ACTION_PROCESSING
-            ) ?? false,
+                ) ?? false,
 
             INSTAGRAM_ACTION_INTERVAL: Number.parseInt(
                 runtime.getSetting("INSTAGRAM_ACTION_INTERVAL") ||

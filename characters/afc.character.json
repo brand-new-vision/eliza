@@ -8,11 +8,12 @@
         "INSTAGRAM_PASSWORD": "BNV$fash",
         "INSTAGRAM_APP_ID": "633611255671116",
         "INSTAGRAM_APP_SECRET": "a5e0cc2eb7dd31644eb5e87395a3ee20",
-        "POST_INTERVAL_MIN": 240,
-        "POST_INTERVAL_MAX": 480,
-        "ENABLE_ACTION_PROCESSING": true,
-        "ACTION_INTERVAL": 30,
-        "MAX_ACTIONS_PROCESSING": 5,
+        "INSTAGRAM_POST_INTERVAL_MIN": 240,
+        "INSTAGRAM_POST_INTERVAL_MAX": 480,
+        "INSTAGRAM_ENABLE_ACTION_PROCESSING": true,
+        "INSTAGRAM_ACTION_INTERVAL": 30,
+        "INSTAGRAM_MAX_ACTIONS": 5,
+        "INSTAGRAM_DRY_RUN": false,
         "instagram": {
             "enabled": true,
             "imageGeneration": {
