@@ -88,7 +88,7 @@ import { IgApiClient } from 'instagram-private-api';
 
       try {
         this.isProcessing = true;
-        elizaLogger.log("[Instagram] Starting interaction check");
+        elizaLogger.debug("[Instagram] Starting interaction check cycle");
 
         // Single session check at the start
         if (!await this.ensureLogin()) {
@@ -99,13 +99,17 @@ import { IgApiClient } from 'instagram-private-api';
         try {
           // Fetch activities first
           const activities = await fetchActivities();
-          elizaLogger.log("[Instagram] Fetched activities:", {
+          elizaLogger.debug("[Instagram] Fetched activities:", {
             count: activities.length,
             types: activities.map(a => a.type),
-            timestamps: activities.map(a => {
-              const timestamp = a.timestamp || a.taken_at;
-              return timestamp ? new Date(timestamp * 1000).toISOString() : 'unknown';
-            })
+            activities: activities.map(a => ({
+              type: a.type,
+              timestamp: a.timestamp || a.taken_at,
+              userId: a.user_id,
+              username: a.user?.username,
+              text: a.text || a.caption?.text,
+              mediaId: a.media_id || a.id
+            }))
           });
 
           // Process activities
@@ -115,7 +119,10 @@ import { IgApiClient } from 'instagram-private-api';
               type: activity.type,
               timestamp: timestamp ? new Date(timestamp * 1000).toISOString() : 'unknown',
               from: activity.user?.username,
-              content: activity.type === 'direct' ? activity.text : activity.caption?.text
+              userId: activity.user_id,
+              content: activity.type === 'direct' ? activity.text : activity.caption?.text,
+              mediaId: activity.media_id || activity.id,
+              activityDetails: activity
             });
 
             if (activity.type === 'direct') {
@@ -130,10 +137,17 @@ import { IgApiClient } from 'instagram-private-api';
 
           // Then fetch timeline
           const timelinePosts = await this.fetchTimelinePosts();
-          elizaLogger.log("[Instagram] Fetched timeline:", {
+          elizaLogger.debug("[Instagram] Fetched timeline:", {
             count: timelinePosts.length,
-            usernames: timelinePosts.map(p => p.user.username),
-            timestamps: timelinePosts.map(p => new Date(p.taken_at * 1000).toISOString())
+            posts: timelinePosts.map(p => ({
+              username: p.user.username,
+              timestamp: new Date(p.taken_at * 1000).toISOString(),
+              caption: p.caption?.text,
+              mediaType: p.media_type,
+              mediaId: p.id,
+              hasCaption: !!p.caption,
+              hasMedia: p.media_type === 1 || p.media_type === 2
+            }))
           });
 
           // Process timeline
@@ -142,8 +156,10 @@ import { IgApiClient } from 'instagram-private-api';
               username: post.user.username,
               timestamp: new Date(post.taken_at * 1000).toISOString(),
               caption: post.caption?.text,
-              hasMedia: post.media_type === 1 || post.media_type === 2, // 1 = IMAGE, 2 = VIDEO
-              mediaType: post.media_type
+              hasMedia: post.media_type === 1 || post.media_type === 2,
+              mediaType: post.media_type,
+              mediaId: post.id,
+              postDetails: post
             });
 
             const shouldInteract = await this.evaluateInteraction(post);
@@ -151,7 +167,8 @@ import { IgApiClient } from 'instagram-private-api';
               postId: post.id,
               username: post.user.username,
               shouldInteract,
-              reason: shouldInteract ? 'Content relevant to agent interests' : 'Content not relevant enough'
+              reason: shouldInteract ? 'Content relevant to agent interests' : 'Content not relevant enough',
+              caption: post.caption?.text
             });
 
             if (shouldInteract) {
@@ -177,51 +194,21 @@ import { IgApiClient } from 'instagram-private-api';
             } : undefined
           };
 
-          // Handle AggregateError specifically
-          if (error && error.constructor.name === 'AggregateError') {
-            const aggregateDetails = {
-              ...errorDetails,
-              errors: Array.isArray(error.errors) ? error.errors.map(e => ({
-                message: e instanceof Error ? e.message : String(e),
-                name: e?.constructor?.name,
-                code: e.code,
-                statusCode: e.statusCode,
-                apiError: e.apiError || e.error,
-                endpoint: e.request?.uri?.path || e.request?.url,
-                response: e.response ? {
-                  statusCode: e.response.statusCode,
-                  statusMessage: e.response.statusMessage,
-                  body: e.response.body
-                } : undefined
-              })) : []
-            };
-
-            elizaLogger.error("[Instagram] Multiple errors while fetching activities:", aggregateDetails);
-          } else {
-            elizaLogger.error("[Instagram] Error fetching activities:", errorDetails);
-            throw error; // Re-throw non-aggregate errors
-          }
+          elizaLogger.error("[Instagram] Error in activity processing:", errorDetails);
+          throw error;
         }
 
       } catch (error) {
-        elizaLogger.error("[Instagram] Error handling interactions:", {
+        elizaLogger.error("[Instagram] Error in interaction cycle:", {
           error: error instanceof Error ? error.message : String(error),
           errorType: error?.constructor?.name,
           code: error.code,
           statusCode: error.statusCode,
-          request: error.request ? {
-            method: error.request.method,
-            uri: error.request.uri?.path || error.request.url,
-            headers: error.request.headers
-          } : undefined,
-          response: error.response ? {
-            statusCode: error.response.statusCode,
-            statusMessage: error.response.statusMessage,
-            body: error.response.body
-          } : undefined
+          stack: error instanceof Error ? error.stack : undefined
         });
       } finally {
         this.isProcessing = false;
+        elizaLogger.debug("[Instagram] Completed interaction check cycle");
       }
     }
 
@@ -393,11 +380,11 @@ import { IgApiClient } from 'instagram-private-api';
       action: string
     ) {
       try {
-        elizaLogger.log("[Instagram] Generating response:", {
+        elizaLogger.debug("[Instagram] Generating response:", {
           action,
           username,
+          inputText: text,
           textLength: text?.length,
-          textPreview: text?.substring(0, 50),
           timestamp: new Date().toISOString()
         });
 
@@ -423,6 +410,13 @@ import { IgApiClient } from 'instagram-private-api';
           template: instagramCommentTemplate,
         });
 
+        elizaLogger.debug("[Instagram] Generation context:", {
+          action,
+          username,
+          context: context,
+          template: instagramCommentTemplate
+        });
+
         const response = await generateText({
           runtime: this.runtime,
           context,
@@ -431,12 +425,14 @@ import { IgApiClient } from 'instagram-private-api';
 
         const cleanedResponse = this.cleanResponse(response);
 
-        elizaLogger.log("[Instagram] Generated response:", {
+        elizaLogger.debug("[Instagram] Generated response:", {
           action,
           username,
+          inputText: text,
+          originalResponse: response,
+          cleanedResponse: cleanedResponse,
           originalLength: response?.length,
-          cleanedLength: cleanedResponse?.length,
-          responsePreview: cleanedResponse?.substring(0, 50)
+          cleanedLength: cleanedResponse?.length
         });
 
         return cleanedResponse;
@@ -446,6 +442,7 @@ import { IgApiClient } from 'instagram-private-api';
           errorType: error?.constructor?.name,
           action,
           username,
+          inputText: text,
           textLength: text?.length,
           stack: error instanceof Error ? error.stack : undefined
         });
@@ -463,10 +460,13 @@ import { IgApiClient } from 'instagram-private-api';
 
     private async handleDirectMessage(activity: any) {
       try {
-        elizaLogger.log("[Instagram] Processing direct message:", {
+        elizaLogger.debug("[Instagram] Processing direct message:", {
           threadId: activity.thread_id,
           userId: activity.user_id,
-          timestamp: new Date().toISOString()
+          username: activity.user?.username,
+          messageText: activity.text,
+          timestamp: new Date().toISOString(),
+          activityDetails: activity
         });
 
         const ig = getIgClient();
@@ -484,12 +484,35 @@ import { IgApiClient } from 'instagram-private-api';
           'fetch direct thread'
         );
 
+        elizaLogger.debug("[Instagram] Retrieved direct thread:", {
+          threadId: activity.thread_id,
+          messageCount: thread.length,
+          messages: thread.map(m => ({
+            type: m.item_type,
+            userId: m.user_id,
+            text: m.text,
+            timestamp: m.timestamp
+          }))
+        });
+
         // Process messages
         for (const message of thread) {
           if (message.item_type === 'text' && message.user_id !== Number(ig.state.cookieUserId)) {
             const messageKey = `instagram-dm-${message.item_id}`;
+
+            elizaLogger.debug("[Instagram] Processing thread message:", {
+              messageId: message.item_id,
+              type: message.item_type,
+              userId: message.user_id,
+              text: message.text,
+              timestamp: message.timestamp
+            });
+
             if (await this.runtime.cacheManager.get(messageKey)) {
-              elizaLogger.log("[Instagram] Direct message already processed:", message.item_id);
+              elizaLogger.debug("[Instagram] Direct message already processed:", {
+                messageId: message.item_id,
+                text: message.text
+              });
               continue;
             }
 
@@ -509,12 +532,21 @@ import { IgApiClient } from 'instagram-private-api';
                 'send direct message'
               );
 
-              elizaLogger.log("[Instagram] Sent direct message reply:", {
+              elizaLogger.debug("[Instagram] Sent direct message reply:", {
                 threadId: activity.thread_id,
-                response: response
+                messageId: message.item_id,
+                originalText: message.text,
+                response: response,
+                timestamp: new Date().toISOString()
               });
 
               await this.runtime.cacheManager.set(messageKey, true);
+            } else {
+              elizaLogger.debug("[Instagram] Skipped sending response (dry run):", {
+                threadId: activity.thread_id,
+                messageId: message.item_id,
+                response: response
+              });
             }
           }
         }
@@ -522,7 +554,8 @@ import { IgApiClient } from 'instagram-private-api';
         elizaLogger.error("[Instagram] Error handling direct message:", {
           error: error instanceof Error ? error.message : String(error),
           stack: error instanceof Error ? error.stack : undefined,
-          threadId: activity.thread_id
+          threadId: activity.thread_id,
+          activityDetails: activity
         });
       }
     }
