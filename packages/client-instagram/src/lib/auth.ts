@@ -4,125 +4,74 @@ import { IgLoginTwoFactorRequiredError, IgApiClient } from "instagram-private-ap
 import type { InstagramConfig } from "../environment";
 import type { InstagramState } from "../types";
 import { fetchProfile } from "./profile";
-import { createInitialState, getIgClient, setIgClient, clearIgClient } from "./state";
+import { createInitialState, getIgClient, setIgClient } from "./state";
 
 /**
  * Authenticates with Instagram
  */
-export async function authenticate(
+async function authenticate(
     runtime: IAgentRuntime,
     config: InstagramConfig
 ): Promise<InstagramState> {
-    if (!config.INSTAGRAM_USERNAME || !config.INSTAGRAM_PASSWORD) {
-        throw new Error('Instagram username and password are required');
-    }
-
     const ig = new IgApiClient();
     const state = createInitialState();
-    const MAX_RETRIES = 3;
 
     try {
-        // Generate device ID first
+        // Generate device ID first - this is required before any operation
         ig.state.generateDevice(config.INSTAGRAM_USERNAME);
+        setIgClient(ig);
 
-        // Configure request defaults with longer timeout
-        ig.request.defaults.timeout = 60000; // 60 second timeout
+        // Execute pre-login simulation as recommended by library
+        await ig.simulate.preLoginFlow();
 
-        // Try to load cached session first
-        const cachedSession = await runtime.cacheManager.get("instagram/session");
-        if (cachedSession) {
-            try {
-                await ig.state.deserialize(cachedSession);
-                await ig.account.currentUser();
-                setIgClient(ig);
-                const profile = await fetchProfile(runtime, config);
-                return {
-                    ...state,
-                    isInitialized: true,
-                    profile,
-                };
-            } catch (error) {
-                elizaLogger.warn("[Instagram] Cached session invalid, proceeding with fresh login");
-            }
-        }
+        // Perform login
+        const loggedInUser = await ig.account.login(
+            config.INSTAGRAM_USERNAME,
+            config.INSTAGRAM_PASSWORD
+        );
 
-        // Perform fresh login
+        // Execute post-login simulation and wait for it to complete
         try {
-            // Try prelogin simulation but don't fail if it times out
+            // First do the essential session setup steps that must succeed
+            await ig.zr.tokenResult();
+            await ig.launcher.postLoginSync();
+            await ig.attribution.logAttribution();
+
+            // Then do the full post-login flow as intended by the library
             try {
-                await Promise.race([
-                    ig.simulate.preLoginFlow(),
-                    new Promise((_, reject) =>
-                        setTimeout(() => reject(new Error('Prelogin timeout')), 10000)
-                    )
-                ]);
+                await ig.simulate.postLoginFlow();
             } catch (error) {
-                elizaLogger.warn("[Instagram] PreLogin simulation skipped:", error.message);
-                // Continue with login anyway
-            }
-
-            // Perform login with retry
-            let retryCount = 0;
-            while (retryCount < MAX_RETRIES) {
-                try {
-                    const loggedInUser = await ig.account.login(
-                        config.INSTAGRAM_USERNAME,
-                        config.INSTAGRAM_PASSWORD
-                    );
-
-                    // Cache the session after successful login
-                    const serialized = await ig.state.serialize();
-                    await runtime.cacheManager.set("instagram/session", serialized);
-
-                    // Set up state persistence for future requests
-                    ig.request.end$.subscribe(async () => {
-                        const serialized = await ig.state.serialize();
-                        await runtime.cacheManager.set("instagram/session", serialized);
-                    });
-
-                    // Set client after successful login
-                    setIgClient(ig);
-
-                    // Skip post-login flow if pre-login failed
-                    try {
-                        await Promise.race([
-                            ig.simulate.postLoginFlow(),
-                            new Promise((_, reject) =>
-                                setTimeout(() => reject(new Error('Postlogin timeout')), 10000)
-                            )
-                        ]);
-                    } catch (error) {
-                        elizaLogger.warn("[Instagram] PostLogin simulation skipped:", error.message);
-                    }
-
-                    const profile = await fetchProfile(runtime, config);
-
-                    return {
-                        ...state,
-                        isInitialized: true,
-                        profile,
-                    };
-                } catch (error) {
-                    retryCount++;
-                    if (error.code === 'ETIMEDOUT' && retryCount < MAX_RETRIES) {
-                        elizaLogger.warn(`[Instagram] Login attempt ${retryCount} failed, retrying in 5s...`);
-                        await new Promise(resolve => setTimeout(resolve, 5000));
-                        continue;
-                    }
-                    throw error;
-                }
+                // Log but don't fail - these are enhancement steps
+                elizaLogger.warn("[Instagram] Full post-login flow had some failures (non-critical):", {
+                    error: error instanceof Error ? error.message : String(error),
+                    username: config.INSTAGRAM_USERNAME
+                });
             }
         } catch (error) {
-            if (error.code === 'ETIMEDOUT') {
-                throw new Error(`Instagram API timeout after ${MAX_RETRIES} attempts. Please check your network connection or try again later.`);
-            }
+            elizaLogger.error("[Instagram] Critical post-login steps failed:", {
+                error: error instanceof Error ? error.message : String(error),
+                username: config.INSTAGRAM_USERNAME
+            });
+            // We should throw here as these are essential steps
             throw error;
         }
+
+        // Fetch profile after successful login
+        const profile = await fetchProfile(runtime, config);
+
+        return {
+            ...state,
+            isInitialized: true,
+            profile,
+        };
     } catch (error) {
         if (error instanceof IgLoginTwoFactorRequiredError) {
             throw new Error("2FA authentication not yet implemented");
         }
-        elizaLogger.error("[Instagram] Authentication failed:", error);
+        elizaLogger.error("[Instagram] Authentication failed:", {
+            error: error instanceof Error ? error.message : String(error),
+            username: config.INSTAGRAM_USERNAME
+        });
         throw error;
     }
 }
@@ -143,7 +92,6 @@ export async function initializeClient(
     config: InstagramConfig
 ): Promise<InstagramState> {
     try {
-        clearIgClient();
         return await authenticate(runtime, config);
     } catch (error) {
         elizaLogger.error("[Instagram] Failed to initialize Instagram client:", error);
@@ -156,53 +104,48 @@ export async function refreshSession(
     config: InstagramConfig
 ): Promise<boolean> {
     try {
-        const ig = getIgClient();
-        if (!ig) return false;
+        const ig = new IgApiClient();
+        ig.state.generateDevice(config.INSTAGRAM_USERNAME);
 
-        // Try to verify current session
+        // Execute pre-login simulation
+        await ig.simulate.preLoginFlow();
+
+        // Perform login
+        await ig.account.login(config.INSTAGRAM_USERNAME, config.INSTAGRAM_PASSWORD);
+
+        // Set client and execute post-login simulation
+        setIgClient(ig);
         try {
-            await ig.account.currentUser();
-            return true;
+            // First do the essential session setup steps that must succeed
+            await ig.zr.tokenResult();
+            await ig.launcher.postLoginSync();
+            await ig.attribution.logAttribution();
+
+            // Then do the full post-login flow as intended by the library
+            try {
+                await ig.simulate.postLoginFlow();
+            } catch (error) {
+                // Log but don't fail - these are enhancement steps
+                elizaLogger.warn("[Instagram] Full post-login flow had some failures (non-critical):", {
+                    error: error instanceof Error ? error.message : String(error),
+                    username: config.INSTAGRAM_USERNAME
+                });
+            }
         } catch (error) {
-            elizaLogger.warn("[Instagram] Session expired, attempting refresh");
-
-            async function loadSession(ig: IgApiClient): Promise<boolean> {
-                try {
-                    const cachedSession = await runtime.cacheManager.get("instagram/session");
-                    if (cachedSession) {
-                        await ig.state.deserialize(cachedSession);
-                        return true;
-                    }
-                } catch (error) {
-                    elizaLogger.warn("[Instagram] Failed to load cached session");
-                }
-                return false;
-            }
-
-            // Try to reuse saved session first
-            if (await loadSession(ig)) {
-                try {
-                    await ig.account.currentUser();
-                    elizaLogger.log("[Instagram] Session refreshed from saved state");
-                    return true;
-                } catch (e) {
-                    elizaLogger.warn("[Instagram] Saved session also expired");
-                }
-            }
-
-            // Fall back to fresh login
-            await ig.account.login(
-                config.INSTAGRAM_USERNAME,
-                config.INSTAGRAM_PASSWORD
-            );
-
-            const serialized = await ig.state.serialize();
-            await runtime.cacheManager.set("instagram/session", serialized);
-            elizaLogger.log("[Instagram] Session refreshed with new login");
-            return true;
+            elizaLogger.error("[Instagram] Critical post-login steps failed:", {
+                error: error instanceof Error ? error.message : String(error),
+                username: config.INSTAGRAM_USERNAME
+            });
+            // We should throw here as these are essential steps
+            throw error;
         }
+
+        return true;
     } catch (error) {
-        elizaLogger.error("[Instagram] Failed to refresh session:", error);
+        elizaLogger.error("[Instagram] Failed to refresh session:", {
+            error: error instanceof Error ? error.message : String(error),
+            username: config.INSTAGRAM_USERNAME
+        });
         return false;
     }
 }

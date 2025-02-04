@@ -11,17 +11,12 @@ export async function fetchComments(
   count = 20
 ): Promise<Comment[]> {
   const ig = getIgClient();
+  if (!ig) throw new Error("Instagram client not initialized");
 
   try {
     elizaLogger.debug("[Instagram] Fetching comments for media:", mediaId);
     const feed = ig.feed.mediaComments(mediaId);
     const comments = await feed.items();
-
-    elizaLogger.debug("[Instagram] Raw comments fetched:", {
-      mediaId,
-      count: comments.length,
-      usernames: comments.map(c => c.user.username)
-    });
 
     const processedComments = comments.slice(0, count).map(comment => ({
       id: comment.pk.toString(),
@@ -33,20 +28,14 @@ export async function fetchComments(
 
     elizaLogger.debug("[Instagram] Processed comments:", {
       mediaId,
-      count: processedComments.length,
-      comments: processedComments.map(c => ({
-        username: c.username,
-        timestamp: c.timestamp,
-        text: c.text
-      }))
+      count: processedComments.length
     });
 
     return processedComments;
   } catch (error) {
     elizaLogger.error('[Instagram] Error fetching comments:', {
       mediaId,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined
+      error: error instanceof Error ? error.message : String(error)
     });
     throw error;
   }
@@ -60,11 +49,12 @@ export async function postComment(
   text: string
 ): Promise<Comment> {
   const ig = getIgClient();
+  if (!ig) throw new Error("Instagram client not initialized");
 
   try {
     elizaLogger.debug("[Instagram] Posting comment:", {
       mediaId,
-      text: text.slice(0, 100) + (text.length > 100 ? '...' : '') // Log truncated text for readability
+      text: text.slice(0, 100) + (text.length > 100 ? '...' : '')
     });
 
     const result = await ig.media.comment({
@@ -82,17 +72,14 @@ export async function postComment(
 
     elizaLogger.debug("[Instagram] Comment posted successfully:", {
       mediaId,
-      commentId: processedComment.id,
-      timestamp: processedComment.timestamp
+      commentId: processedComment.id
     });
 
     return processedComment;
   } catch (error) {
     elizaLogger.error('[Instagram] Error posting comment:', {
       mediaId,
-      text: text.slice(0, 100) + (text.length > 100 ? '...' : ''),
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined
+      error: error instanceof Error ? error.message : String(error)
     });
     throw error;
   }
@@ -103,30 +90,22 @@ export async function postComment(
  */
 export async function likeMedia(mediaId: string): Promise<void> {
   const ig = getIgClient();
+  if (!ig) throw new Error("Instagram client not initialized");
 
   try {
     elizaLogger.debug("[Instagram] Attempting to like media:", mediaId);
-
     await ig.media.like({
       mediaId,
       moduleInfo: {
-        module_name: 'profile',
-        user_id: ig.state.cookieUserId,
-        username: ig.state.cookieUsername
+        module_name: 'feed_timeline'
       },
-      d: 1  // 1 for like, 0 for unlike
+      d: 1
     });
-
-    elizaLogger.log("[Instagram] Successfully liked media:", {
-      mediaId,
-      username: ig.state.cookieUsername,
-      timestamp: new Date().toISOString()
-    });
+    elizaLogger.debug("[Instagram] Successfully liked media:", mediaId);
   } catch (error) {
     elizaLogger.error('[Instagram] Error liking media:', {
       mediaId,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined
+      error: error instanceof Error ? error.message : String(error)
     });
     throw error;
   }
@@ -137,19 +116,22 @@ export async function likeMedia(mediaId: string): Promise<void> {
  */
 export async function unlikeMedia(mediaId: string): Promise<void> {
   const ig = getIgClient();
+  if (!ig) throw new Error("Instagram client not initialized");
 
   try {
     await ig.media.unlike({
       mediaId,
       moduleInfo: {
-        module_name: 'profile',
-        user_id: ig.state.cookieUserId,
-        username: ig.state.cookieUsername
-      }
+        module_name: 'feed_timeline'
+      },
+      d: 0
     });
-    elizaLogger.log(`Unliked media: ${mediaId}`);
+    elizaLogger.debug("[Instagram] Unliked media:", mediaId);
   } catch (error) {
-    elizaLogger.error('Error unliking media:', error);
+    elizaLogger.error('[Instagram] Error unliking media:', {
+      mediaId,
+      error: error instanceof Error ? error.message : String(error)
+    });
     throw error;
   }
 }
@@ -163,11 +145,12 @@ export async function replyToComment(
   text: string
 ): Promise<Comment> {
   const ig = getIgClient();
+  if (!ig) throw new Error("Instagram client not initialized");
 
   try {
     const result = await ig.media.comment({
       mediaId,
-      text: text.slice(0, 2200), // Instagram comment length limit
+      text: text.slice(0, 2200),
       replyToCommentId: commentId
     });
 
@@ -179,24 +162,11 @@ export async function replyToComment(
       replies: []
     };
   } catch (error) {
-    elizaLogger.error('Error replying to comment:', error);
-    throw error;
-  }
-}
-
-/**
- * Deletes a comment
- */
-export async function deleteComment(
-  mediaId: string,
-  commentId: string
-): Promise<void> {
-  const ig = getIgClient();
-  try {
-    await ig.media.comment.delete(mediaId, commentId);
-    elizaLogger.log(`Deleted comment: ${commentId} from media: ${mediaId}`);
-  } catch (error) {
-    elizaLogger.error('Error deleting comment:', error);
+    elizaLogger.error('[Instagram] Error replying to comment:', {
+      mediaId,
+      commentId,
+      error: error instanceof Error ? error.message : String(error)
+    });
     throw error;
   }
 }
@@ -206,12 +176,16 @@ export async function deleteComment(
  */
 export async function hasLikedMedia(mediaId: string): Promise<boolean> {
   const ig = getIgClient();
+  if (!ig) throw new Error("Instagram client not initialized");
 
   try {
     const info = await ig.media.info(mediaId);
     return info.items[0].has_liked ?? false;
   } catch (error) {
-    elizaLogger.error('Error checking if media is liked:', error);
+    elizaLogger.error('[Instagram] Error checking if media is liked:', {
+      mediaId,
+      error: error instanceof Error ? error.message : String(error)
+    });
     throw error;
   }
 }
@@ -219,180 +193,52 @@ export async function hasLikedMedia(mediaId: string): Promise<boolean> {
 /**
  * Fetches recent activities (alternative to news feed)
  */
-export async function fetchActivities(): Promise<any[]> {
+export async function fetchActivities(username: string): Promise<any[]> {
     const ig = getIgClient();
     if (!ig) {
         throw new Error('Instagram client not initialized');
     }
 
-    const MAX_RETRIES = 3;
-    const RETRY_DELAY = 5000;
-    let lastError: Error;
+    try {
+        elizaLogger.debug("[Instagram] Starting activity fetch");
+        const activities = [];
 
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-        try {
-            elizaLogger.log("[Instagram] Starting activity fetch cycle (attempt " + attempt + "/" + MAX_RETRIES + ")");
-            const activities = [];
+        // Get user info using searchExact
+        const user = await ig.user.searchExact(username);
+        elizaLogger.debug("[Instagram] User details:", {
+            userId: user.pk,
+            username: user.username,
+            timestamp: new Date().toISOString()
+        });
 
-            // First get current user info
-            const currentUser = await ig.account.currentUser();
-            const userId = currentUser.pk;
-            const username = currentUser.username;
-            elizaLogger.debug("[Instagram] Current user details:", {
-                userId,
-                username,
-                timestamp: new Date().toISOString()
-            });
+        // Get direct inbox items
+        elizaLogger.debug("[Instagram] Fetching direct messages...");
+        const inbox = await ig.feed.directInbox().items();
+        elizaLogger.debug("[Instagram] Direct messages fetched:", {
+            count: inbox.length
+        });
+        activities.push(...inbox.map(item => ({
+            type: 'direct',
+            ...item
+        })));
 
-            // Get direct inbox items with retry
-            elizaLogger.debug("[Instagram] Fetching direct messages...");
-            const inbox = await ig.feed.directInbox().items().catch(error => {
-                elizaLogger.warn("[Instagram] Failed to fetch inbox:", {
-                    error: error.message,
-                    attempt
-                });
-                return [];
-            });
-            elizaLogger.debug("[Instagram] Direct messages fetched:", {
-                count: inbox.length,
-                timestamps: inbox.map(item => {
-                    const timestamp = item.timestamp || item.taken_at;
-                    return timestamp ? new Date(Number(timestamp) * 1000).toISOString() : 'unknown';
-                })
-            });
-            activities.push(...inbox.map(item => ({
-                type: 'direct',
-                ...item
-            })));
+        // Get user's own media feed
+        elizaLogger.debug("[Instagram] Fetching user's recent posts...");
+        const userFeed = await ig.feed.user(user.pk).items();
+        elizaLogger.debug("[Instagram] User feed fetched:", {
+            count: userFeed.length
+        });
+        activities.push(...userFeed.map(item => ({
+            type: 'media',
+            ...item
+        })));
 
-            // Get user's own media feed with retry
-            elizaLogger.debug("[Instagram] Fetching user's recent posts...");
-            const userFeed = await ig.feed.user(userId).items().catch(error => {
-                elizaLogger.warn("[Instagram] Failed to fetch user feed:", {
-                    error: error.message,
-                    attempt
-                });
-                return [];
-            });
-            elizaLogger.debug("[Instagram] User feed fetched:", {
-                count: userFeed.length,
-                timestamps: userFeed.map(post => {
-                    const timestamp = post.taken_at;
-                    return timestamp ? new Date(Number(timestamp) * 1000).toISOString() : 'unknown';
-                })
-            });
-
-            // Get comments on recent posts
-            elizaLogger.debug("[Instagram] Fetching comments on recent posts...");
-            let totalComments = 0;
-            for (const post of userFeed.slice(0, 5)) {
-                try {
-                    const comments = await ig.feed.mediaComments(post.id).items();
-                    totalComments += comments.length;
-                    elizaLogger.debug("[Instagram] Comments fetched for post:", {
-                        postId: post.id,
-                        commentCount: comments.length,
-                        timestamps: comments.map(c => {
-                            const timestamp = c.created_at;
-                            return timestamp ? new Date(Number(timestamp) * 1000).toISOString() : 'unknown';
-                        })
-                    });
-                    activities.push(...comments.map(comment => ({
-                        type: 2,
-                        mediaId: post.id,
-                        pk: comment.pk,
-                        user_id: comment.user_id,
-                        text: comment.text,
-                        has_liked_comment: comment.has_liked_comment,
-                        user: {
-                            pk: comment.user.pk,
-                            username: comment.user.username
-                        }
-                    })));
-                } catch (error) {
-                    elizaLogger.warn("[Instagram] Failed to fetch comments for post:", {
-                        postId: post.id,
-                        error: error.message,
-                        attempt
-                    });
-                }
-            }
-            elizaLogger.debug("[Instagram] Total comments processed:", totalComments);
-
-            /* Timeline fetch temporarily disabled
-            // Get timeline feed with retry
-            elizaLogger.debug("[Instagram] Fetching timeline for mentions...");
-            const timeline = await ig.feed.timeline().items().catch(error => {
-                elizaLogger.warn("[Instagram] Failed to fetch timeline:", {
-                    error: error.message,
-                    attempt
-                });
-                return [];
-            });
-            const mentions = timeline.filter(item =>
-                item.caption?.text?.includes(`@${username}`)
-            );
-            elizaLogger.debug("[Instagram] Mentions found in timeline:", {
-                total: mentions.length,
-                usernames: mentions.map(m => m.user.username),
-                timestamps: mentions.map(m => {
-                    const timestamp = m.taken_at;
-                    return timestamp ? new Date(Number(timestamp) * 1000).toISOString() : 'unknown';
-                })
-            });
-            activities.push(...mentions.map(item => ({
-                type: 'mention',
-                ...item
-            })));
-            */
-
-            // Check for mentions in comments
-            const mentionsInComments = activities
-                .filter(item => item.type === 'comment' && item.text?.includes(`@${username}`))
-                .map(item => ({
-                    type: 'mention',
-                    ...item
-                }));
-
-            if (mentionsInComments.length > 0) {
-                elizaLogger.debug("[Instagram] Found mentions in comments:", {
-                    count: mentionsInComments.length,
-                    mentions: mentionsInComments.map(m => ({
-                        username: m.user?.username,
-                        text: m.text?.substring(0, 50),
-                        mediaId: m.mediaId
-                    }))
-                });
-                activities.push(...mentionsInComments);
-            }
-
-            // Log activity summary
-            const activitySummary = activities.reduce((acc, curr) => {
-                acc[curr.type] = (acc[curr.type] || 0) + 1;
-                return acc;
-            }, {});
-
-            elizaLogger.log("[Instagram] Activity fetch cycle completed:", {
-                attempt,
-                summary: activitySummary,
-                totalActivities: activities.length
-            });
-
-            return activities;
-        } catch (error) {
-            lastError = error;
-            elizaLogger.error("[Instagram] Error in activity fetch cycle:", {
-                attempt,
-                error: error instanceof Error ? error.message : String(error),
-                stack: error instanceof Error ? error.stack : undefined
-            });
-
-            if (attempt < MAX_RETRIES) {
-                elizaLogger.log(`[Instagram] Retrying in ${RETRY_DELAY}ms...`);
-                await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
-            }
-        }
+        return activities;
+    } catch (error) {
+        elizaLogger.error('[Instagram] Error fetching activities:', {
+            username,
+            error: error instanceof Error ? error.message : String(error)
+        });
+        throw error;
     }
-
-    throw lastError;
 }

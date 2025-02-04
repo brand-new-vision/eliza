@@ -7,32 +7,45 @@ export async function fetchRecentMedia(
     runtime: IAgentRuntime,
     config: InstagramConfig,
     count = 10
-  ): Promise<MediaItem[]> {
+): Promise<MediaItem[]> {
     const ig = getIgClient();
+    if (!ig) throw new Error("Instagram client not initialized");
 
     try {
-      const feed = ig.feed.user(ig.state.cookieUserId);
-      const items = await feed.items();
+        // First get the user ID properly
+        const user = await ig.user.searchExact(config.INSTAGRAM_USERNAME);
 
-      return items.slice(0, count).map((item: any) => ({
-        id: item.id,
-        mediaType: item.media_type as MediaItem['mediaType'],
-        mediaUrl: item.media_url,
-        thumbnailUrl: item.thumbnail_url || null,
-        permalink: item.permalink,
-        caption: item.caption?.text || null,
-        timestamp: item.timestamp,
-        children: item.children?.map((child: any) => ({
-          id: child.id,
-          mediaType: child.media_type as MediaItem['mediaType'],
-          mediaUrl: child.media_url,
-          thumbnailUrl: child.thumbnail_url || null,
-          permalink: child.permalink,
-          timestamp: child.timestamp
-        })) || null
-      }));
+        // Then get their feed using the proper ID
+        const feed = ig.feed.user(user.pk);
+        const items = await feed.items();
+
+        elizaLogger.debug("[Instagram] Fetched media items:", {
+            username: config.INSTAGRAM_USERNAME,
+            count: items.length
+        });
+
+        return items.slice(0, count).map((item: any) => ({
+            id: item.id,
+            mediaType: item.media_type,
+            mediaUrl: item.media_url,
+            thumbnailUrl: item.thumbnail_url || null,
+            permalink: item.permalink,
+            caption: item.caption?.text || null,
+            timestamp: item.timestamp,
+            children: item.children?.map((child: any) => ({
+                id: child.id,
+                mediaType: child.media_type,
+                mediaUrl: child.media_url,
+                thumbnailUrl: child.thumbnail_url || null,
+                permalink: child.permalink,
+                timestamp: child.timestamp
+            })) || null
+        }));
     } catch (error) {
-      elizaLogger.error('Error fetching recent media:', error);
-      throw error;
+        elizaLogger.error('[Instagram] Error fetching recent media:', {
+            username: config.INSTAGRAM_USERNAME,
+            error: error.message
+        });
+        throw error;
     }
-  }
+}

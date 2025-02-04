@@ -17,6 +17,11 @@ export const InstagramClientInterface: Client = {
             const state = await initializeClient(runtime, config);
             elizaLogger.log("Instagram client initialized");
 
+            // Add a longer delay to ensure session is properly established
+            elizaLogger.log("Waiting for session to stabilize...");
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            elizaLogger.log("Session stabilization wait complete");
+
             // Create services
             const postService = new InstagramPostService(runtime, state);
             const interactionService = new InstagramInteractionService(

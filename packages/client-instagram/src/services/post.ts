@@ -6,8 +6,6 @@ import {
     elizaLogger,
     generateImage,
     generateText,
-    getEmbeddingZeroVector,
-    stringToUuid,
 } from "@elizaos/core";
 import { promises as fs } from "fs";
 import path from "path";
@@ -46,86 +44,134 @@ interface PostOptions {
 }
 
 export class InstagramPostService {
-    private runtime: IAgentRuntime;
-    private state: InstagramState;
-    private isProcessing = false;
-    private lastPostTime = 0;
-    private stopProcessing = false;
+    private isRunning = false;
+    private intervalId?: NodeJS.Timeout;
+    private minInterval: number;
+    private maxInterval: number;
 
     constructor(
-        runtime: IAgentRuntime,
-        state: InstagramState
+        private runtime: IAgentRuntime,
+        private state: InstagramState
     ) {
-        this.runtime = runtime;
-        this.state = state;
+        // Get intervals from settings or use defaults
+        this.minInterval = Number.parseInt(
+            this.runtime.getSetting("INSTAGRAM_POST_INTERVAL_MIN") || "90",
+            10
+        );
+        this.maxInterval = Number.parseInt(
+            this.runtime.getSetting("INSTAGRAM_POST_INTERVAL_MAX") || "180",
+            10
+        );
     }
 
     async start() {
-        const generatePostLoop = async () => {
-            const lastPost = await this.runtime.cacheManager.get<{
-                timestamp: number;
-            }>("instagram/lastPost");
+        if (this.isRunning) {
+            elizaLogger.warn("[Instagram] Post service already running");
+            return;
+        }
 
-            const lastPostTimestamp = lastPost?.timestamp ?? 0;
-            const minMinutes = Number.parseInt(
-                this.runtime.getSetting("POST_INTERVAL_MIN") || "90",
-                10
-            );
-            const maxMinutes = Number.parseInt(
-                this.runtime.getSetting("POST_INTERVAL_MAX") || "180",
-                10
-            );
+        this.isRunning = true;
+        elizaLogger.log("[Instagram] Starting post service", {
+            minInterval: this.minInterval,
+            maxInterval: this.maxInterval
+        });
+
+        // Initial post generation
+        await this.generateNewPost();
+
+        // Set up interval for periodic posts
+        const scheduleNextPost = () => {
             const randomMinutes =
-                Math.floor(Math.random() * (maxMinutes - minMinutes + 1)) +
-                minMinutes;
+                Math.floor(Math.random() * (this.maxInterval - this.minInterval + 1)) +
+                this.minInterval;
             const delay = randomMinutes * 60 * 1000;
 
-            if (Date.now() > lastPostTimestamp + delay) {
-                await this.generateNewPost();
-            }
-
-            if (!this.stopProcessing) {
-                setTimeout(generatePostLoop, delay);
-            }
+            this.intervalId = setTimeout(async () => {
+                try {
+                    await this.generateNewPost();
+                } catch (error) {
+                    elizaLogger.error("[Instagram] Error generating post:", {
+                        error: error instanceof Error ? error.message : String(error)
+                    });
+                }
+                // Schedule next post after this one completes
+                if (this.isRunning) {
+                    scheduleNextPost();
+                }
+            }, delay);
 
             elizaLogger.log(
                 `Next Instagram post scheduled in ${randomMinutes} minutes`
             );
         };
 
-        // Start the loop
-        generatePostLoop();
+        // Start the scheduling cycle
+        scheduleNextPost();
     }
 
     async stop() {
-        this.stopProcessing = true;
+        elizaLogger.log("[Instagram] Stopping post service");
+        this.isRunning = false;
+        if (this.intervalId) {
+            clearTimeout(this.intervalId);
+        }
     }
 
     private async generateNewPost() {
+        if (!this.isRunning) return;
+
+        const ig = getIgClient();
+        if (!ig) {
+            elizaLogger.error("[Instagram] Client not initialized");
+            return;
+        }
+
         try {
-            elizaLogger.log("Generating new Instagram post");
+            elizaLogger.log("[Instagram] Generating new post");
 
-            const roomId = stringToUuid(
-                "instagram_generate_room-" + this.state.profile?.username
-            );
+            // Generate post content
+            const content = await this.generatePostContent();
+            if (!content) {
+                elizaLogger.error("[Instagram] Failed to generate post content");
+                return;
+            }
 
-            await this.runtime.ensureUserExists(
-                this.runtime.agentId,
-                this.state.profile?.username || "",
-                this.runtime.character.name,
-                "instagram"
-            );
+            // Generate or get image
+            const mediaUrl = await this.generateImage(content);
+            if (!mediaUrl) {
+                elizaLogger.error("[Instagram] Failed to generate image");
+                return;
+            }
 
-            const topics = this.runtime.character.topics.join(", ");
-            elizaLogger.debug("Available topics:", topics);
+            // Create the post
+            await this.createPost({
+                media: [
+                    {
+                        type: "IMAGE",
+                        url: mediaUrl,
+                    },
+                ],
+                caption: content,
+            });
 
+            elizaLogger.log("[Instagram] Successfully created new post");
+        } catch (error) {
+            elizaLogger.error("[Instagram] Error generating post:", {
+                error: error instanceof Error ? error.message : String(error)
+            });
+        }
+    }
+
+    private async generatePostContent(): Promise<string | null> {
+        try {
+            // First compose the state with character info
             const state = await this.runtime.composeState(
                 {
                     userId: this.runtime.agentId,
-                    roomId: roomId,
+                    roomId: this.runtime.agentId,
                     agentId: this.runtime.agentId,
                     content: {
-                        text: topics || "",
+                        text: "Generate a new Instagram post",
                         action: "POST",
                     },
                 },
@@ -134,129 +180,55 @@ export class InstagramPostService {
                 }
             );
 
-            elizaLogger.debug("Composed state:", {
-                userId: state.userId,
-                roomId: state.roomId,
-                agentId: state.agentId,
-                instagramUsername: this.state.profile?.username,
-                topics: topics
-            });
-
+            // Use the template to generate the post
             const context = composeContext({
                 state,
-                template: instagramPostTemplate,
+                template: this.runtime.character.templates?.instagramPostTemplate || instagramPostTemplate,
             });
 
-            elizaLogger.debug("Post generation prompt:\n" + context);
-
-            const content = await generateText({
+            // Generate the actual post content
+            const response = await generateText({
                 runtime: this.runtime,
                 context,
                 modelClass: ModelClass.SMALL,
             });
 
-            elizaLogger.debug("Raw generated content:", content);
-
-            // Clean the generated content
-            let cleanedContent = "";
-
-            // Try parsing as JSON first
-            try {
-                const parsedResponse = JSON.parse(content);
-                if (parsedResponse.text) {
-                    cleanedContent = parsedResponse.text;
-                    elizaLogger.debug("Parsed JSON content:", cleanedContent);
-                } else if (typeof parsedResponse === "string") {
-                    cleanedContent = parsedResponse;
-                    elizaLogger.debug("Parsed string content:", cleanedContent);
-                }
-            } catch {
-                // If not JSON, clean the raw content
-                cleanedContent = content
-                    .replace(/^\s*{?\s*"text":\s*"|"\s*}?\s*$/g, "") // Remove JSON-like wrapper
-                    .replace(/^['"](.*)['"]$/g, "$1") // Remove quotes
-                    .replace(/\\"/g, '"') // Unescape quotes
-                    .replace(/\\n/g, "\n\n") // Unescape newlines
-                    .trim();
-                elizaLogger.debug("Cleaned raw content:", cleanedContent);
+            if (!response) {
+                throw new Error("No content generated");
             }
 
-            if (!cleanedContent) {
-                elizaLogger.error(
-                    "Failed to extract valid content from response:",
-                    {
-                        rawResponse: content,
-                        attempted: "JSON parsing",
-                    }
-                );
-                return;
-            }
-
-            elizaLogger.log("Final post content:", cleanedContent);
-
-            // For Instagram, we need to generate or get an image
-            elizaLogger.log("Starting image generation for post");
-            const mediaUrl = await this.getOrGenerateImage(cleanedContent);
-            elizaLogger.log("Generated image URL:", mediaUrl);
-
-            elizaLogger.log("Creating Instagram post with content and image");
-            await this.createPost({
-                media: [
-                    {
-                        type: "IMAGE",
-                        url: mediaUrl,
-                    },
-                ],
-                caption: cleanedContent,
-            });
-
-            // Create memory of the post
-            const memoryId = stringToUuid(`instagram-post-${Date.now()}`);
-            elizaLogger.log("Creating memory for post:", {
-                memoryId,
-                roomId,
-                content: cleanedContent
-            });
-
-            await this.runtime.messageManager.createMemory({
-                id: memoryId,
-                userId: this.runtime.agentId,
-                agentId: this.runtime.agentId,
-                content: {
-                    text: cleanedContent,
-                    source: "instagram",
-                },
-                roomId,
-                embedding: getEmbeddingZeroVector(),
-                createdAt: Date.now(),
-            });
-
-            elizaLogger.log("Successfully completed post generation and publishing");
+            return this.cleanContent(response);
         } catch (error) {
-            elizaLogger.error("Error generating Instagram post:", {
-                error: error instanceof Error ? error.message : String(error),
-                stack: error instanceof Error ? error.stack : undefined,
-                phase: "generateNewPost",
+            elizaLogger.error("[Instagram] Error generating post content:", {
+                error: error instanceof Error ? error.message : String(error)
             });
+            return null;
         }
     }
 
-    // Placeholder - implement actual image generation/selection
-    private async getOrGenerateImage(content: string): Promise<string> {
+    private async generateImage(content: string): Promise<string | null> {
         try {
-            elizaLogger.log("Generating image for Instagram post");
+            elizaLogger.log("[Instagram] Generating image for post");
 
-            const result = await generateImage(
-                {
-                    prompt: content,
-                    width: 1024,
-                    height: 1024,
-                    count: 1,
-                    numIterations: 50,
-                    guidanceScale: 7.5,
-                },
-                this.runtime
-            );
+            // Get image settings from character config
+            const imageSettings = this.runtime.character.settings.imageSettings || {};
+
+            const result = await generateImage({
+                prompt: content,
+                width: imageSettings?.width || 1024,
+                height: imageSettings?.height || 1024,
+                count: imageSettings?.count || 1,
+                negativePrompt: imageSettings?.negativePrompt || null,
+                numIterations: imageSettings?.numIterations || 50,
+                guidanceScale: imageSettings?.guidanceScale || 7.5,
+                seed: imageSettings?.seed || null,
+                modelId: imageSettings?.modelId || null,
+                jobId: imageSettings?.jobId || null,
+                stylePreset: imageSettings?.stylePreset || "",
+                hideWatermark: imageSettings?.hideWatermark ?? true,
+                safeMode: imageSettings?.safeMode ?? false,
+                cfgScale: imageSettings?.cfgScale || null,
+            }, this.runtime);
 
             if (!result.success || !result.data || result.data.length === 0) {
                 throw new Error(
@@ -280,31 +252,35 @@ export class InstagramPostService {
 
             return tempFile;
         } catch (error) {
-            elizaLogger.error("Error generating image:", {
+            elizaLogger.error("[Instagram] Error generating image:", {
                 error: error instanceof Error ? error.message : String(error),
-                stack: error instanceof Error ? error.stack : undefined,
-                phase: "getOrGenerateImage",
+                content: content.substring(0, 100), // Log first 100 chars of content for debugging
+                imageSettings: this.runtime.character.settings.imageSettings // Log image settings for debugging
             });
-            throw error;
+            return null;
         }
     }
 
-    async createPost(options: PostOptions) {
+    private async createPost(options: PostOptions) {
         const ig = getIgClient();
+        if (!ig) {
+            elizaLogger.error("[Instagram] Client not initialized");
+            return;
+        }
 
         try {
-            elizaLogger.log("Creating Instagram post", {
+            elizaLogger.log("[Instagram] Creating post", {
                 mediaCount: options.media.length,
                 hasCaption: !!options.caption,
             });
 
-            // Process media
+            // Process media files
             const processedMedia = await Promise.all(
                 options.media.map(async (media) => {
                     const buffer = await this.processMedia(media);
                     return {
-                        ...media,
-                        buffer,
+                        file: buffer,
+                        type: media.type,
                     };
                 })
             );
@@ -314,43 +290,33 @@ export class InstagramPostService {
                 // Create carousel post
                 await ig.publish.album({
                     items: processedMedia.map((media) => ({
-                        file: media.buffer,
-                        caption: options.caption,
+                        file: media.file,
                     })),
+                    caption: options.caption,
                 });
             } else {
                 // Single image/video post
                 const media = processedMedia[0];
                 if (media.type === "VIDEO") {
                     await ig.publish.video({
-                        video: media.buffer,
+                        video: media.file,
+                        coverImage: media.file,
                         caption: options.caption,
-                        coverImage: media.buffer,
                     });
                 } else {
                     await ig.publish.photo({
-                        file: media.buffer,
+                        file: media.file,
                         caption: options.caption,
                     });
                 }
             }
 
-            // Update last post time
-            this.lastPostTime = Date.now();
-            await this.runtime.cacheManager.set("instagram/lastPost", {
-                timestamp: this.lastPostTime,
-            });
-
-            elizaLogger.log("Instagram post created successfully");
+            elizaLogger.log("[Instagram] Post created successfully");
         } catch (error) {
-            elizaLogger.error("Error creating Instagram post:", {
-                error: error instanceof Error ? error.message : String(error),
-                stack: error instanceof Error ? error.stack : undefined,
-                phase: "createPost",
-                mediaCount: options.media.length,
-                hasCaption: !!options.caption,
+            elizaLogger.error("[Instagram] Error creating post:", {
+                error: error instanceof Error ? error.message : String(error)
             });
-            throw error;
+            throw error; // Propagate error to caller
         }
     }
 
@@ -359,12 +325,12 @@ export class InstagramPostService {
         url: string;
     }): Promise<Buffer> {
         try {
-            elizaLogger.log("Processing media", {
+            elizaLogger.log("[Instagram] Processing media", {
                 type: media.type,
                 url: media.url,
             });
 
-            // Read file directly from filesystem instead of using fetch
+            // Read file
             const buffer = await fs.readFile(media.url);
 
             if (media.type === "IMAGE") {
@@ -384,14 +350,18 @@ export class InstagramPostService {
             // For other types, return original buffer
             return buffer;
         } catch (error) {
-            elizaLogger.error("Error processing media:", {
-                error: error instanceof Error ? error.message : String(error),
-                stack: error instanceof Error ? error.stack : undefined,
-                phase: "processMedia",
-                mediaType: media.type,
-                url: media.url,
+            elizaLogger.error("[Instagram] Error processing media:", {
+                error: error instanceof Error ? error.message : String(error)
             });
             throw error;
         }
+    }
+
+    private cleanContent(content: string): string {
+        return content
+            .trim()
+            .replace(/^['"](.*)['"]$/, "$1")
+            .replace(/\\n/g, "\n")
+            .slice(0, 2200); // Instagram caption length limit
     }
 }

@@ -5,7 +5,7 @@
     "imageModelProvider": "venice",
     "settings": {
         "INSTAGRAM_USERNAME": "angelocoqueta",
-        "INSTAGRAM_PASSWORD": "BNV$fash",
+        "INSTAGRAM_PASSWORD": "zyg0rzc-wtx4fwk*NJE",
         "INSTAGRAM_APP_ID": "633611255671116",
         "INSTAGRAM_APP_SECRET": "a5e0cc2eb7dd31644eb5e87395a3ee20",
         "INSTAGRAM_POST_INTERVAL_MIN": 240,
@@ -18,14 +18,14 @@
             "enabled": true,
             "imageGeneration": {
                 "provider": "venice",
-                "model": "flux-custom",
+                "modelId": "stable-diffusion-3.5",
                 "size": "1024x1024"
             }
         }
     },
     "imageGeneration": {
         "provider": "venice",
-        "model": "flux-custom",
+        "modelId": "stable-diffusion-3.5",
         "size": "1024x1024",
         "hideWatermark": true
     },
