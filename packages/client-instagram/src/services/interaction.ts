@@ -1,8 +1,15 @@
-import { elizaLogger, type IAgentRuntime } from "@elizaos/core";
+import { elizaLogger, type IAgentRuntime, composeContext, generateText, ModelClass } from "@elizaos/core";
 import { getIgClient } from "../lib/state";
 import type { InstagramState } from "../types";
-import { fetchActivities } from "../lib/actions";
-import { composeContext, generateText, ModelClass } from "@elizaos/core";
+import {
+    fetchActivities,
+    fetchTimelinePosts,
+    likeMedia,
+    postComment,
+    fetchDirectInbox,
+    sendDirectMessage,
+    replyToComment
+} from "../lib/actions";
 
 export class InstagramInteractionService {
     private isRunning = false;
@@ -38,9 +45,6 @@ export class InstagramInteractionService {
             maxActions: this.maxActions
         });
 
-        // Initial check
-        await this.processInteractions();
-
         // Set up interval for periodic checks
         this.intervalId = setInterval(() => {
             this.processInteractions().catch(error => {
@@ -71,15 +75,43 @@ export class InstagramInteractionService {
         try {
             elizaLogger.debug("[Instagram] Processing interactions");
 
-            // Get user info using searchExact instead of currentUser
+            // Get user info using searchExact
             const user = await ig.user.searchExact(this.state.profile?.username || '');
             elizaLogger.debug("[Instagram] User details:", {
                 userId: user.pk,
                 username: user.username
             });
 
-            // Fetch direct messages
-            const inbox = await ig.feed.directInbox().items();
+            // Fetch timeline posts using typed function
+            const timelinePosts = await fetchTimelinePosts(20);
+            elizaLogger.debug("[Instagram] Fetched timeline:", {
+                count: timelinePosts.length,
+                posts: timelinePosts.map(p => ({
+                    mediaId: p.id,
+                    mediaType: p.mediaType,
+                    timestamp: p.timestamp,
+                    permalink: p.permalink
+                }))
+            });
+
+            // Process timeline posts
+            for (const post of timelinePosts) {
+                if (!this.isRunning) break;
+
+                elizaLogger.debug("[Instagram] Processing timeline post:", {
+                    mediaId: post.id,
+                    mediaType: post.mediaType,
+                    timestamp: post.timestamp
+                });
+
+                const shouldInteract = await this.evaluateInteraction(post);
+                if (shouldInteract) {
+                    await this.processTimelinePost(post);
+                }
+            }
+
+            // Fetch and process direct messages
+            const inbox = await fetchDirectInbox();
             elizaLogger.debug("[Instagram] Direct messages fetched:", {
                 count: inbox.length
             });
@@ -90,26 +122,11 @@ export class InstagramInteractionService {
                 await this.handleDirectMessage(thread);
             }
 
-            // Fetch user's recent posts using the proper user ID
-            const userFeed = await ig.feed.user(user.pk).items();
-            elizaLogger.debug("[Instagram] User feed fetched:", {
-                count: userFeed.length
+            // Fetch user's recent activities
+            const activities = await fetchActivities(this.state.profile?.username || '');
+            elizaLogger.debug("[Instagram] Activities fetched:", {
+                count: activities.length
             });
-
-            // Process comments on recent posts
-            for (const post of userFeed.slice(0, 5)) {
-                if (!this.isRunning) break;
-                const comments = await ig.feed.mediaComments(post.id).items();
-                elizaLogger.debug("[Instagram] Comments fetched for post:", {
-                    postId: post.id,
-                    commentCount: comments.length
-                });
-
-                for (const comment of comments) {
-                    if (!this.isRunning) break;
-                    await this.handleComment(comment);
-                }
-            }
 
             elizaLogger.debug("[Instagram] Interaction processing completed");
         } catch (error) {
@@ -119,13 +136,118 @@ export class InstagramInteractionService {
         }
     }
 
-    private async handleDirectMessage(thread: any) {
-        const ig = getIgClient();
-        if (!ig) {
-            elizaLogger.error("[Instagram] Client not initialized");
-            return;
-        }
+    private async evaluateInteraction(post: any): Promise<boolean> {
+        try {
+            // Skip if no caption
+            if (!post.caption?.text) {
+                return false;
+            }
 
+            // Skip posts from the agent itself
+            if (post.user.username === this.state.profile?.username) {
+                return false;
+            }
+
+            // Generate evaluation using AI
+            const context = composeContext({
+                state: await this.runtime.composeState({
+                    userId: this.runtime.agentId,
+                    roomId: this.runtime.agentId,
+                    agentId: this.runtime.agentId,
+                    content: {
+                        text: post.caption.text,
+                        action: "EVALUATE_POST",
+                        source: "instagram",
+                        username: post.user.username
+                    }
+                }),
+                template: `
+# Task: Evaluate if {{agentName}} should interact with this Instagram post
+Post from @${post.user.username}: "${post.caption.text}"
+
+Consider:
+1. Is the content relevant to {{agentName}}'s interests and expertise?
+2. Would {{agentName}} have a meaningful perspective to share?
+3. Is the post recent and engaging?
+
+Respond with either "true" or "false".
+`
+            });
+
+            const response = await generateText({
+                runtime: this.runtime,
+                context,
+                modelClass: ModelClass.SMALL
+            });
+
+            return response?.toLowerCase().includes('true') || false;
+        } catch (error) {
+            elizaLogger.error("[Instagram] Error evaluating interaction:", {
+                error: error instanceof Error ? error.message : String(error),
+                postId: post.id,
+                username: post.user.username
+            });
+            return false;
+        }
+    }
+
+    private async processTimelinePost(post: any) {
+        try {
+            // Generate comment using AI
+            const context = composeContext({
+                state: await this.runtime.composeState({
+                    userId: this.runtime.agentId,
+                    roomId: this.runtime.agentId,
+                    agentId: this.runtime.agentId,
+                    content: {
+                        text: post.caption || '',
+                        action: "COMMENT",
+                        source: "instagram",
+                        mediaType: post.mediaType
+                    }
+                }),
+                template: `
+# Task: Write a comment as {{agentName}} on this Instagram post
+Post type: ${post.mediaType}
+${post.caption ? `Caption: "${post.caption}"` : 'No caption'}
+
+Write a brief, engaging comment that:
+1. Is relevant to the post content
+2. Shows {{agentName}}'s personality
+3. Adds value to the conversation
+4. Is appropriate for Instagram
+5. Is 1-2 sentences maximum
+
+Comment:`
+            });
+
+            const comment = await generateText({
+                runtime: this.runtime,
+                context,
+                modelClass: ModelClass.SMALL
+            });
+
+            if (comment) {
+                // Like the post using typed function
+                await likeMedia(post.id);
+
+                // Post the comment using typed function
+                await postComment(post.id, comment);
+
+                elizaLogger.debug("[Instagram] Processed timeline post:", {
+                    postId: post.id,
+                    comment
+                });
+            }
+        } catch (error) {
+            elizaLogger.error("[Instagram] Error processing timeline post:", {
+                error: error instanceof Error ? error.message : String(error),
+                postId: post.id
+            });
+        }
+    }
+
+    private async handleDirectMessage(thread: any) {
         try {
             const lastMessage = thread.items[0];
             if (!lastMessage || lastMessage.item_type !== 'text') return;
@@ -140,11 +262,7 @@ export class InstagramInteractionService {
             );
 
             if (response && this.isRunning) {
-                await ig.directThread.broadcast({
-                    item: 'text',
-                    threadIds: [thread.thread_id],
-                    form: { text: response }
-                });
+                await sendDirectMessage(thread.thread_id, response);
 
                 elizaLogger.debug("[Instagram] Sent direct message response:", {
                     threadId: thread.thread_id,
@@ -159,12 +277,6 @@ export class InstagramInteractionService {
     }
 
     private async handleComment(comment: any) {
-        const ig = getIgClient();
-        if (!ig) {
-            elizaLogger.error("[Instagram] Client not initialized");
-            return;
-        }
-
         try {
             if (comment.user_id === this.state.profile?.id) return;
 
@@ -175,11 +287,7 @@ export class InstagramInteractionService {
             );
 
             if (response && this.isRunning) {
-                await ig.media.comment({
-                    mediaId: comment.media_id,
-                    text: response,
-                    replyToCommentId: comment.pk
-                });
+                await replyToComment(comment.media_id, comment.pk, response);
 
                 elizaLogger.debug("[Instagram] Replied to comment:", {
                     mediaId: comment.media_id,

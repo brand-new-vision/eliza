@@ -18,17 +18,19 @@
             "enabled": true,
             "imageGeneration": {
                 "provider": "venice",
-                "modelId": "stable-diffusion-3.5",
+                "model": "flux-custom",
                 "size": "1024x1024"
+
             }
         }
     },
     "imageGeneration": {
         "provider": "venice",
-        "modelId": "stable-diffusion-3.5",
+        "model": "flux-custom",
         "size": "1024x1024",
         "hideWatermark": true
     },
+
     "voice": {
         "model": "eleven_multilingual_v2"
     },
