@@ -144,21 +144,30 @@ export async function likeMedia(mediaId: string): Promise<void> {
     }
 
     try {
+        // Ensure mediaId is in the correct format
+        const formattedMediaId = mediaId.includes('_') ? mediaId.split('_')[0] : mediaId;
+
+        elizaLogger.debug("[Instagram API] Attempting to like media:", {
+            originalId: mediaId,
+            formattedId: formattedMediaId
+        });
+
         await ig.media.like({
-            mediaId,
+            mediaId: formattedMediaId,
             moduleInfo: {
                 module_name: "feed_timeline"
             },
             d: 1
         });
 
-        elizaLogger.debug("[Instagram API] Liked media", {
-            mediaId
+        elizaLogger.debug("[Instagram API] Successfully liked media", {
+            mediaId: formattedMediaId
         });
     } catch (error) {
         elizaLogger.error("[Instagram API] Error liking media:", {
             error: error instanceof Error ? error.message : String(error),
-            mediaId
+            mediaId,
+            details: error instanceof Error ? error.stack : undefined
         });
         throw error;
     }

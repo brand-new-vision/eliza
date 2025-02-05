@@ -11,16 +11,20 @@ export const InstagramClientInterface: Client = {
         try {
             // Validate configuration
             const config = await validateInstagramConfig(runtime);
-            elizaLogger.log("Instagram client configuration validated");
+            elizaLogger.error("[Instagram] Client configuration validated:", {
+                actionProcessing: config.INSTAGRAM_ENABLE_ACTION_PROCESSING,
+                actionInterval: config.INSTAGRAM_ACTION_INTERVAL,
+                maxActions: config.INSTAGRAM_MAX_ACTIONS
+            });
 
             // Initialize client and get initial state
             const state = await initializeClient(runtime, config);
-            elizaLogger.log("Instagram client initialized");
+            elizaLogger.error("[Instagram] Client initialized successfully");
 
             // Add a longer delay to ensure session is properly established
-            elizaLogger.log("Waiting for session to stabilize...");
+            elizaLogger.error("[Instagram] Waiting for session to stabilize...");
             await new Promise(resolve => setTimeout(resolve, 5000));
-            elizaLogger.log("Session stabilization wait complete");
+            elizaLogger.error("[Instagram] Session stabilization complete");
 
             // Create services
             const postService = new InstagramPostService(runtime, state);
@@ -28,18 +32,22 @@ export const InstagramClientInterface: Client = {
                 runtime,
                 state
             );
+            elizaLogger.error("[Instagram] Services created");
 
             // Start services
             if (!config.INSTAGRAM_DRY_RUN) {
                 await postService.start();
-                elizaLogger.log("Instagram post service started");
+                elizaLogger.error("[Instagram] Post service started");
 
                 if (config.INSTAGRAM_ENABLE_ACTION_PROCESSING) {
+                    elizaLogger.error("[Instagram] Starting interaction service...");
                     await interactionService.start();
-                    elizaLogger.log("Instagram interaction service started");
+                    elizaLogger.error("[Instagram] Interaction service started successfully");
+                } else {
+                    elizaLogger.error("[Instagram] Action processing is disabled");
                 }
             } else {
-                elizaLogger.log("Instagram client running in dry-run mode");
+                elizaLogger.error("[Instagram] Client running in dry-run mode");
             }
 
             // Return manager instance

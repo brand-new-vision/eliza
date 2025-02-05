@@ -304,7 +304,7 @@ export class InstagramPostService {
                 seed: imageSettings.seed,
                 stylePreset: imageSettings.stylePreset,
                 hideWatermark: imageSettings.hideWatermark ?? true,
-                safeMode: imageSettings.safeMode ?? false,
+                safeMode: imageSettings.safeMode ?? true,
                 cfgScale: imageSettings.cfgScale,
             }, this.runtime);
 
