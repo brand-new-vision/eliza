@@ -272,8 +272,15 @@ export async function fetchComments(mediaId: string, count: number = 20): Promis
     }
 
     try {
+        elizaLogger.debug("[Instagram API] Fetching comments for media:", {
+            mediaId,
+            requestedCount: count
+        });
+
         const feed = ig.feed.mediaComments(mediaId);
-        const comments = (await feed.items()).map(comment => ({
+        const items = await feed.items();
+
+        const comments = items.map(comment => ({
             id: comment.pk.toString(),
             text: comment.text,
             timestamp: new Date(comment.created_at * 1000).toISOString(),
@@ -281,17 +288,29 @@ export async function fetchComments(mediaId: string, count: number = 20): Promis
             replies: []
         }));
 
-        elizaLogger.debug("[Instagram API] Fetched comments", {
+        elizaLogger.debug("[Instagram API] Successfully fetched comments:", {
             mediaId,
-            count: comments.length
+            fetchedCount: comments.length
         });
 
         return comments.slice(0, count);
     } catch (error) {
-        elizaLogger.error("[Instagram API] Error fetching comments:", {
-            error: error instanceof Error ? error.message : String(error),
-            mediaId
-        });
+        // Handle AggregateError specifically
+        if (error.name === 'AggregateError' && Array.isArray(error.errors)) {
+            elizaLogger.error("[Instagram API] Multiple errors fetching comments:", {
+                mediaId,
+                errors: error.errors.map(e => e.message || String(e)),
+                stack: error.stack
+            });
+        } else {
+            elizaLogger.error("[Instagram API] Error fetching comments:", {
+                mediaId,
+                error: error instanceof Error ? error.message : String(error),
+                errorName: error.name,
+                stack: error instanceof Error ? error.stack : undefined,
+                details: error.response?.body || error.response || undefined
+            });
+        }
         throw error;
     }
 }

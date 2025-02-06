@@ -106,8 +106,8 @@ export async function validateInstagramConfig(
             ),
 
             INSTAGRAM_MAX_ACTIONS: Number.parseInt(
-                runtime.getSetting("MAX_ACTIONS_PROCESSING") ||
-                    process.env.MAX_ACTIONS_PROCESSING ||
+                runtime.getSetting("INSTAGRAM_MAX_ACTIONS") ||
+                    process.env.INSTAGRAM_MAX_ACTIONS ||
                     DEFAULT_MAX_ACTIONS.toString(),
                 10
             ),
